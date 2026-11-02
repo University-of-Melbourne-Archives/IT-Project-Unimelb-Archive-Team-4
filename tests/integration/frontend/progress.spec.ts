@@ -892,9 +892,6 @@ test("with a transcription model saved, the dialog prefills it and shows no noti
   await expect(dialog.getByLabel("Provider", { exact: true })).toHaveValue("codex");
   await expect(dialog.getByLabel("Effort", { exact: true })).toHaveValue("high");
   await expect(dialog.getByText("No transcription model is set.")).toHaveCount(0);
-  const accuracy = dialog.getByRole("link", { name: "See how accurate it has been" });
-  await expect(accuracy).toHaveAttribute("href", "/?series=1&view=accuracy");
-  await expect(accuracy).toHaveAttribute("target", "_blank");
 });
 
 test.describe("The server pages, searches and filters the overview", () => {
@@ -999,7 +996,7 @@ test.describe("The server pages, searches and filters the overview", () => {
     await expect(page.getByRole("heading", { name: "Item 216424" })).toBeVisible();
     expect(new Set(asked)).toEqual(new Set([
       "/api/collections/1", "/api/collections", "/api/collections/1/items/216424", "/api/jobs/7/transcripts", "/api/jobs",
-      "/api/transcription-models", "/api/connections", "/api/reviewers", // the last, once on load, checks who is working
+      "/api/transcription-models", "/api/connections", "/api/api-keys", "/api/reviewers", // the last, once on load, checks who is working
     ]));
   });
 

@@ -11,68 +11,68 @@ type State = { claude: ReturnType<typeof conn>; codex: ReturnType<typeof conn> }
 type Defaults = { provider: string; model: string; effort: string };
 const SAVED: Defaults = { provider: "claude", model: "claude-saved-model", effort: "high" };
 const APP: Defaults = { provider: "codex", model: "gpt-app-model", effort: "medium" };
+const OPENAI: Defaults = { provider: "openai", model: "gpt-x", effort: "default" };
 const FOLDERS = { data: "C:\\projects\\survey\\data", output: "C:\\projects\\survey\\output" };
 const RELEASES = "https://github.com/bennos280/IT-Project-Unimelb-Archive-Team-4/releases";
 const REPO = "https://github.com/bennos280/IT-Project-Unimelb-Archive-Team-4";
 const SYSTEM = { os: "Windows 11", python: "3.12.4", pytorch: true };
 const CHECKED_AT = "2026-10-20T04:05:00Z";
 const UP_TO_DATE = { current: "v0.2.0", latest: "v0.2.0", releases: RELEASES, error: null, updatable: false, checkedAt: CHECKED_AT, system: SYSTEM };
-const ACCOUNTS = "/?view=settings&tab=accounts"; // the other tabs are hidden until opened: Accounts and API keys, and About below
-const ABOUT = "/?view=settings&tab=about";
+const ABOUT = "/?view=settings&tab=about"; // the About tab is hidden until opened
+const KEYS = [["gemini", "Gemini API"], ["anthropic", "Claude API"], ["openai", "OpenAI API"], ["openrouter", "OpenRouter"]];
+
 type Options = {
   defaults?: Defaults | null; // the saved choice; null: nothing saved yet; left out: SAVED
   saveError?: string; // a 400 for PUT /transcription-defaults
   testReply?: object; // the body of a test request's reply
   testStatus?: number;
   gateTests?: boolean; // hold test replies until calls.release()
-  transcriptionOptions?: object; // the body of GET /transcription-options; without it the request fails and the text boxes stay
-  sorting?: "local" | "model"; localSorting?: boolean; // page sorting saved (left out: the reading model), whether PyTorch is here
-  sortingCheck?: object; // the body of POST /api/page-sorting/check; left out: it passes
-  sortingModels?: object[]; // the body of GET /api/sorting-models
-  sortingInstall?: { installable?: boolean; detail?: string; result?: { ok: boolean; detail?: string } }; // GET /api/page-sorting/install (installable left out: it is); result: how an install started with POST ends
+  // The body of GET /transcription-options, or a function of the providers that have a key; without it the request fails.
+  transcriptionOptions?: object | ((withKey: string[]) => object);
+  keys?: string[]; // the API providers with a key saved
+  envKeys?: string[]; // the API providers whose key comes from the computer's settings
+  keyError?: string; // a 400 for PUT /api-keys/<provider>
+  keysFail?: boolean; // GET /api-keys answers 500
+  connectionsFail?: string; // GET /api/connections answers 500 with this detail (calls.connectionsFail changes it later)
+  sorting?: { method: string; sorter: object | null }; // page sorting as saved (left out: the reading model, no sorter)
   version?: object; // the body of GET /api/version; left out: UP_TO_DATE
   versionFails?: boolean; // GET /api/version answers 500 (calls.versionFails changes it later)
   foldersFail?: boolean; // GET /api/folders answers 500
   openError?: string; // POST /api/folders/<which>/open answers 500 with this detail (calls.openError changes it later)
   updateStatus?: number; // the status of POST /api/update; left out: 202
-  apiKeys?: object[]; // the body of GET /api/api-keys
 };
 
 async function mockApi(page: Page, state: State, options: Options = {}) {
   let defaults = options.defaults === undefined ? SAVED : options.defaults;
   let release = () => {};
   const gate = options.gateTests ? new Promise<void>((resolve) => { release = resolve; }) : null;
-  const apiKeys = options.apiKeys ?? [];
+  const keys = new Map(KEYS.map(([provider]) => [provider, { saved: options.keys?.includes(provider) ?? false, fromEnvironment: options.envKeys?.includes(provider) ?? false }]));
+  const keyList = () => KEYS.map(([provider, label]) => ({ provider, label, keysUrl: `https://example.com/${provider}/keys`, needsKey: true, ...keys.get(provider)! }));
+  const withKey = () => [...keys].filter(([, k]) => k.saved || k.fromEnvironment).map(([provider]) => provider);
+  const sorting = { method: options.sorting?.method ?? "model", sorter: options.sorting?.sorter ?? null };
   const calls = {
-    get: 0, updates: 0, apiKeys, post: [] as string[], delete: [] as string[], loginBody: [] as unknown[],
-    put: [] as unknown[], deletes: 0, logout: [] as string[], logoutBody: [] as unknown[], tests: [] as string[], testBody: [] as unknown[],
-    release: () => release(),
+    get: 0, updates: 0, post: [] as string[], delete: [] as string[], loginBody: [] as unknown[],
+    put: [] as unknown[], logout: [] as string[], logoutBody: [] as unknown[], tests: [] as string[], testBody: [] as unknown[],
+    keyPuts: [] as { provider: string; body: unknown }[], options: 0, sortingGets: 0, sortingPuts: [] as unknown[],
+    release: () => release(), connectionsFail: options.connectionsFail ?? "",
     versions: 0, versionBody: options.version ?? UP_TO_DATE, versionFails: options.versionFails ?? false, opened: [] as string[],
     openError: options.openError ?? "",
     // Holds the replies to GET /api/version until the returned function is called.
     holdVersion: () => { let open = () => {}; versionGate = new Promise<void>((resolve) => { open = resolve; }); return open; },
   };
   let versionGate: Promise<void> | null = null;
-  const sorting = {
-    method: options.sorting ?? "model", unsure: "review", sorter: null as unknown, localAvailable: options.localSorting ?? true,
-    saved: [] as unknown[], checks: 0, active: [] as unknown[], retrains: [] as unknown[], installs: 0,
-  };
-  const install = { installable: options.sortingInstall?.installable ?? true, running: false, ok: null as boolean | null, detail: options.sortingInstall?.detail ?? null as string | null, seconds: null as number | null };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const login = path.match(/^\/api\/connections\/(claude|codex)\/login$/);
     const logout = path.match(/^\/api\/connections\/(claude|codex)\/logout$/);
     const tested = path.match(/^\/api\/connections\/(claude|codex)\/test$/);
+    const keyed = path.match(/^\/api\/api-keys\/(\w+)$/);
     if (path === "/api/transcription-defaults" && request.method() === "PUT") {
       calls.put.push(request.postDataJSON());
       if (options.saveError) return route.fulfill({ status: 400, json: { detail: options.saveError } });
       defaults = request.postDataJSON();
       return route.fulfill({ json: defaults });
-    }
-    if (path === "/api/transcription-defaults" && request.method() === "DELETE") {
-      calls.deletes++;
-      return route.fulfill({ status: 405, json: { detail: "Method Not Allowed" } });
     }
     const opened = path.match(/^\/api\/folders\/(data|output)\/open$/);
     if (opened && request.method() === "POST") {
@@ -95,7 +95,7 @@ async function mockApi(page: Page, state: State, options: Options = {}) {
     }
     if (path === "/api/connections") {
       calls.get++;
-      return route.fulfill({ json: state });
+      return calls.connectionsFail ? route.fulfill({ status: 500, json: { detail: calls.connectionsFail } }) : route.fulfill({ json: state });
     }
     if (login && request.method() === "POST") {
       calls.post.push(login[1]);
@@ -108,48 +108,32 @@ async function mockApi(page: Page, state: State, options: Options = {}) {
       state[login[1] as keyof State].login = { running: false, exitCode: null };
       return route.fulfill({ status: 204 });
     }
-    if (path === "/api/transcription-options" && options.transcriptionOptions)
-      return route.fulfill({ json: options.transcriptionOptions });
+    if (path === "/api/transcription-options") {
+      calls.options++;
+      const body = options.transcriptionOptions;
+      if (!body) return route.fulfill({ status: 500, json: { detail: "No models." } });
+      return route.fulfill({ json: typeof body === "function" ? body(withKey()) : body });
+    }
     if (path === "/api/transcription-models")
       return route.fulfill({ json: { configured: defaults, models: [] } });
-    if (path === "/api/page-sorting/install" && request.method() === "POST") {
-      if (request.headers()["content-type"] !== "application/json" || request.postData() !== "{}") // the API requires a JSON body
-        return route.fulfill({ status: 422, json: { detail: "Field required" } });
-      if (!install.installable) return route.fulfill({ status: 400, json: { detail: install.detail } });
-      sorting.installs++;
-      Object.assign(install, { running: true, ok: null, detail: null });
-      return route.fulfill({ status: 202, json: install });
-    }
-    if (path === "/api/page-sorting/install") {
-      if (install.running) { // the first poll finds it finished
-        const result = options.sortingInstall?.result ?? { ok: true };
-        Object.assign(install, { running: false, ok: result.ok, detail: result.detail ?? null, seconds: 40 });
-        if (result.ok) sorting.localAvailable = true;
-      }
-      return route.fulfill({ json: install });
-    }
-    if (path === "/api/page-sorting" && request.method() === "PUT") {
-      const change = request.postDataJSON();
-      sorting.saved.push(change);
-      Object.assign(sorting, change.sameAsTranscription ? { sorter: null } : change);
-    }
     if (path === "/api/page-sorting") {
-      const { method, unsure, sorter, localAvailable } = sorting;
-      return route.fulfill({ json: { method, unsure, sorter, localAvailable, checked: null } });
+      if (request.method() === "PUT") {
+        calls.sortingPuts.push(request.postDataJSON());
+        Object.assign(sorting, { method: "model", sorter: null });
+      } else {
+        calls.sortingGets++;
+      }
+      return route.fulfill({ json: { ...sorting, unsure: "review", localAvailable: true, checked: null } });
     }
-    if (path === "/api/page-sorting/check") {
-      sorting.checks++;
-      return route.fulfill({ json: options.sortingCheck ?? { ok: true, seconds: 2.5 } });
+    if (keyed && request.method() === "PUT") {
+      const body = request.postDataJSON();
+      calls.keyPuts.push({ provider: keyed[1], body });
+      if (options.keyError) return route.fulfill({ status: 400, json: { detail: options.keyError } });
+      keys.get(keyed[1])!.saved = Boolean(body.key);
+      return route.fulfill({ json: keyList() });
     }
-    if (path === "/api/sorting-models/active") {
-      sorting.active.push(request.postDataJSON());
-      return route.fulfill({ json: { active: request.postDataJSON().modelId } });
-    }
-    if (path === "/api/sorting-models" && request.method() === "POST") {
-      sorting.retrains.push(request.postDataJSON());
-      return route.fulfill({ status: 202, json: {} });
-    }
-    if (path === "/api/sorting-models") return route.fulfill({ json: options.sortingModels ?? [] });
+    if (path === "/api/api-keys")
+      return options.keysFail ? route.fulfill({ status: 500, json: { detail: "No keys." } }) : route.fulfill({ json: keyList() });
     if (path === "/api/version") {
       calls.versions++;
       await versionGate;
@@ -159,86 +143,521 @@ async function mockApi(page: Page, state: State, options: Options = {}) {
       calls.updates++;
       return route.fulfill({ status: options.updateStatus ?? 202, json: options.updateStatus ? { detail: "This copy wasn't installed from a release: update it with git pull." } : { updating: true } });
     }
-    if (path === "/api/api-keys") return route.fulfill({ json: apiKeys });
     if (path === "/api/collections/1/items")
       return route.fulfill({ json: { items: [], page: 0, total: 0, all: 0, transcribed: 0, totals: { total: 0, reviewable: 0, unassigned: 0, reviewed: 0, ready: 0 } } });
     if (path === "/api/collections")
-      return route.fulfill({ json: [{ id: 1, name: "Wilfred Prest Survey", archiveSeries: 499420, bundles: 0, pages: 0 }] });
+      return route.fulfill({ json: [{ id: 1, name: "Test Survey", archiveSeries: 499420, bundles: 0, pages: 0 }] });
     return route.fulfill({ status: 404, json: { detail: `Unexpected test request: ${path}` } });
   });
-  return Object.assign(calls, { sorting });
-}
-
-// The Settings page with both accounts signed in, and page sorting as options says: what was saved for it.
-async function mockSorting(page: Page, options: Options = {}) {
-  return (await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, options)).sorting;
+  return calls;
 }
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-const claudeModel = (value: string, group: string, label = value) => ({ value, label, group, efforts: EFFORTS, defaultEffort: null });
+const claudeModel = (value: string, label = value) => ({ value, label, group: "used", efforts: EFFORTS, defaultEffort: null });
+// An API or local provider's models: they have no efforts of their own.
+const apiModels = (...values: string[]) => ({ available: true, error: null, efforts: [], models: values.map((value) => ({ value, label: value, group: "listed", efforts: null, defaultEffort: null })) });
+const NO_MODELS = { available: false, error: null, efforts: [], models: [] };
 const OPTIONS = {
-  claude: { available: true, error: null, efforts: EFFORTS, models: [
-    claudeModel("claude-used-1", "used"), claudeModel("opus", "latest", "opus (latest)"), claudeModel("sonnet", "latest", "sonnet (latest)")] },
+  claude: { available: true, error: null, efforts: EFFORTS, models: [claudeModel("claude-used-1"), claudeModel("opus", "opus (latest)"), claudeModel("sonnet", "sonnet (latest)")] },
   codex: { available: true, error: null, efforts: ["low", "medium", "high"], models: [
     { value: "gpt-a", label: "GPT A", group: "listed", efforts: ["low", "medium"], defaultEffort: "medium" },
     { value: "gpt-b", label: "GPT B", group: "listed", efforts: ["high"], defaultEffort: "high" }] },
+  openai: apiModels("gpt-x", "gpt-y"),
 };
+// The models of an API provider are listed only once it has a key.
+const keyed = (withKey: string[]) => ({ ...OPTIONS, openai: withKey.includes("openai") ? OPTIONS.openai : NO_MODELS });
 
-const claude = (page: Page) => page.getByRole("group", { name: "Claude Code" });
-const codex = (page: Page) => page.getByRole("group", { name: "Codex CLI" });
-const TABS = ["Transcription", "Accounts and API keys", "About"];
+const model = (page: Page) => page.locator("section#transcription-defaults");
+const field = (page: Page, name: string) => model(page).getByLabel(name, { exact: true }); // not the tab panel, which the Model tab labels
+const way = (page: Page, name: string) => page.getByRole("radiogroup", { name: "How you pay for the AI" }).getByRole("radio", { name, exact: true });
+const change = (page: Page) => model(page).getByRole("button", { name: "Change", exact: true });
+const done = (page: Page) => model(page).getByRole("button", { name: "Done", exact: true });
+const options = (page: Page, label: string) => field(page, label).locator("option");
 const tab = (page: Page, name: string) => page.getByRole("tab", { name, exact: true });
 const panel = (page: Page, name: string) => page.getByRole("tabpanel", { name, exact: true });
 
-test("each state shows its badge and actions, and no email or organisation", async ({ page }) => {
-  const state: State = {
-    claude: ready({ email: "someone@example.com", orgName: "Secret Org" }),
-    codex: conn({ installed: false }),
-  };
+// Opens Settings with the saved choice, and the form with Change.
+async function openForm(page: Page) {
+  await page.goto("/?view=settings");
+  await change(page).click();
+}
+
+test("Settings has a heading, a subtitle and two tabs, Model first", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() });
+  await page.goto("/?view=settings");
+  await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
+  await expect(page.locator("h1")).toHaveCount(1);
+  await expect(page.getByText("How pages are read, and the accounts that read them", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tablist", { name: "Settings" }).getByRole("tab")).toHaveText(["Model", "About"]);
+  await expect(tab(page, "Model")).toHaveAttribute("aria-selected", "true");
+  await expect(panel(page, "Model").getByRole("heading", { name: "Transcription model", level: 2 })).toBeVisible();
+  await tab(page, "About").click();
+  for (const title of ["PrestCribe v0.2.0", "Where your files are", "Help"]) await expect(panel(page, "About").getByRole("heading", { name: title, level: 2 })).toBeVisible();
+});
+
+test("a tab opens from ?tab=, clicking one shows it and puts it in the URL, and any other tab is Model", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() });
+  await page.goto(ABOUT);
+  await expect(tab(page, "About")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("section#updates")).toBeVisible();
+  await expect(model(page)).toBeHidden();
+
+  await tab(page, "Model").click();
+  await expect(page).toHaveURL(/\/\?view=settings&tab=transcription$/);
+  await expect(model(page)).toBeVisible();
+  await expect(page.locator("section#updates")).toBeHidden();
+  await tab(page, "About").click();
+  await expect(page).toHaveURL(/\/\?view=settings&tab=about$/);
+
+  for (const gone of ["nonsense", "accounts", "sorting"]) {
+    await page.goto(`/?view=settings&tab=${gone}`);
+    await expect(tab(page, "Model")).toHaveAttribute("aria-selected", "true");
+    await expect(model(page)).toBeVisible();
+  }
+});
+
+test("switching tabs loads nothing again and keeps what was chosen", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
+  await page.goto("/?view=settings");
+  await way(page, "API key").click();
+  await expect(field(page, "Provider")).toHaveValue("gemini");
+  await expect(page.locator("section#updates")).toContainText("Up to date"); // About is loaded while it is hidden
+  const loaded = calls.get;
+  await tab(page, "About").click();
+  await tab(page, "Model").click();
+  await expect(way(page, "API key")).toBeChecked();
+  await expect(field(page, "Provider")).toHaveValue("gemini");
+  expect(calls.get).toBe(loaded);
+});
+
+test("the app's name returns to the series list", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() });
+  await page.goto("/?view=settings");
+  await page.getByRole("link", { name: "PrestCribe" }).click();
+  await expect(page.getByRole("heading", { name: "Series", level: 1 })).toBeVisible();
+});
+
+test("the top bar's Settings opens the settings page on the Model tab", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() });
+  await page.goto("/?series=1");
+  await page.getByRole("banner").getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(/\/\?view=settings$/);
+  await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
+  await expect(tab(page, "Model")).toHaveAttribute("aria-selected", "true");
+});
+
+test("on a phone the summary, the form and the About tab don't scroll sideways", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) });
+  await page.setViewportSize({ width: 375, height: 800 });
+  const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  await page.goto("/?view=settings");
+  await expect(change(page)).toBeVisible();
+  expect(await fits()).toBe(true);
+  await change(page).click();
+  await expect(done(page)).toBeVisible();
+  expect(await fits()).toBe(true);
+  await tab(page, "About").click();
+  await expect(page.locator("section#folders code")).toHaveCount(2);
+  expect(await fits()).toBe(true);
+});
+
+test("sign-in status that can't be loaded says why and Try again loads it", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { connectionsFail: "No sign-in status." });
+  await page.goto("/?view=settings");
+  await expect(page.getByRole("alert").filter({ hasText: "No sign-in status." })).toBeVisible();
+  calls.connectionsFail = "";
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(model(page).getByRole("button", { name: "Test connection" })).toBeVisible();
+});
+
+test("API keys that can't be loaded say so", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() }, { keysFail: true });
+  await page.goto("/?view=settings");
+  await expect(page.getByRole("alert").filter({ hasText: "No keys." })).toBeVisible();
+});
+
+// The first run: nothing saved, so the form is all there is.
+
+test("with nothing saved the form shows straight away, subscription first, with no summary and nothing sent", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
+  await page.goto("/?view=settings");
+  await expect(page.getByRole("radiogroup", { name: "How you pay for the AI" }).getByRole("radio")).toHaveText(["Subscription", "API key", "Local"]);
+  await expect(way(page, "Subscription")).toBeChecked();
+  await expect(way(page, "API key")).not.toBeChecked();
+  await expect(options(page, "Provider")).toHaveText(["Claude Code", "Codex CLI"]);
+  await expect(field(page, "Model")).toBeVisible();
+  await expect(change(page)).toHaveCount(0);
+  await expect(done(page)).toHaveCount(0);
+  expect(calls.put).toEqual([]);
+});
+
+test("each way of paying lists its providers, and Local has only Ollama", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
+  await page.goto("/?view=settings");
+  await way(page, "API key").click();
+  await expect(way(page, "API key")).toBeChecked();
+  await expect(options(page, "Provider")).toHaveText(["Gemini API", "Claude API", "OpenAI API", "OpenRouter"]);
+  await expect(field(page, "Provider")).toHaveValue("gemini");
+  await way(page, "Local").click();
+  await expect(field(page, "Provider")).toHaveCount(0);
+  await way(page, "Subscription").click();
+  await expect(field(page, "Provider")).toHaveValue("claude");
+});
+
+test("first run with an API provider that has a key: its models are listed, and picking one saves it with the effort default", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null, keys: ["openai"], transcriptionOptions: keyed });
+  await page.goto("/?view=settings");
+  await way(page, "API key").click();
+  await field(page, "Provider").selectOption("openai");
+  await expect(options(page, "Model")).toHaveText(["Choose a model…", "gpt-x", "gpt-y"]);
+  await expect(field(page, "Model")).toHaveValue(""); // nothing is picked for you
+  await expect(field(page, "Effort")).toHaveCount(0); // API models have one effort
+  expect(calls.put).toEqual([]);
+
+  await field(page, "Model").selectOption("gpt-x");
+  await expect.poll(() => calls.put).toEqual([OPENAI]);
+  await expect(model(page)).toContainText("gpt-x");
+  await expect(model(page)).toContainText("OpenAI API · Your own OpenAI API key");
+  await expect(change(page)).toBeVisible();
+  await expect(field(page, "Model")).toHaveCount(0);
+
+  await page.reload();
+  await expect(model(page)).toContainText("gpt-x");
+  await expect(model(page)).toContainText("OpenAI API");
+});
+
+test("a subscription's effort is chosen by hand: nothing is saved until the model and the effort are both chosen", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null, transcriptionOptions: OPTIONS });
+  await page.goto("/?view=settings");
+  await expect(options(page, "Model")).toHaveText(["Choose a model…", "claude-used-1", "opus (latest)", "sonnet (latest)"]);
+  await expect(field(page, "Model")).toHaveValue("");
+  await expect(field(page, "Effort")).toHaveValue("");
+  await expect(field(page, "Effort")).toBeDisabled(); // no model yet
+
+  await field(page, "Model").selectOption("opus");
+  await expect(field(page, "Effort")).toBeEnabled();
+  await expect(field(page, "Effort")).toHaveValue(""); // not even a default
+  await expect(options(page, "Effort")).toHaveText(["Choose…", ...EFFORTS]);
+  await page.evaluate(() => 0);
+  expect(calls.put).toEqual([]);
+
+  await field(page, "Effort").selectOption("low");
+  await expect.poll(() => calls.put).toEqual([{ provider: "claude", model: "opus", effort: "low" }]);
+  await expect(model(page)).toContainText("opus · low");
+});
+
+test("a save the API refuses shows its message and keeps the choice made", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null, transcriptionOptions: OPTIONS, saveError: "Enter a valid model name." });
+  await page.goto("/?view=settings");
+  await field(page, "Model").selectOption("opus");
+  await field(page, "Effort").selectOption("low");
+  await expect(model(page).getByRole("alert")).toHaveText("Enter a valid model name.");
+  expect(calls.put).toHaveLength(1);
+  await expect(field(page, "Model")).toHaveValue("opus");
+  await expect(field(page, "Effort")).toHaveValue("low");
+  await expect(change(page)).toHaveCount(0); // still the form: nothing was saved
+});
+
+// The summary of what is saved.
+
+test("the summary names the model, effort, provider and who pays, and a subscription can be tested, checked for usage and signed out of", async ({ page }) => {
+  const state: State = { claude: ready({ email: "someone@example.com", orgName: "Secret Org" }), codex: conn() };
   await mockApi(page, state);
-  await page.goto(ACCOUNTS);
-  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
-  await expect(page.getByText("Uses your own Claude or ChatGPT subscription on this computer. Usage counts against it.")).toBeVisible();
-  await expect(claude(page)).toContainText("Ready");
-  await expect(claude(page)).toContainText("Max plan");
-  await expect(claude(page).getByRole("button")).toHaveText(["Test connection", "Sign out"]);
-  await expect(codex(page)).toContainText("Not installed");
-  await expect(codex(page).getByRole("link", { name: /Install Codex CLI/ })).toHaveAttribute("href", "https://developers.openai.com/codex/cli");
-  await expect(codex(page).getByRole("button", { name: "Check again" })).toBeVisible();
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText("claude-saved-model · high");
+  await expect(model(page)).toContainText("Claude Code · Your Claude Pro or Max plan");
+  await expect(model(page).getByRole("button")).toHaveText(["Test connection", "Sign out", "Change"]);
+  await expect(model(page).getByRole("link", { name: "Check usage" })).toHaveAttribute("href", "https://claude.ai/settings/usage");
+  await expect(model(page).getByRole("link", { name: "Check usage" })).toHaveAttribute("target", "_blank");
+  await expect(model(page).getByRole("link", { name: "Check usage" })).toHaveAttribute("rel", /noopener/);
   await expect(page.locator("body")).not.toContainText(/@example\.com|Secret Org/);
+  await expect(model(page)).not.toContainText("Not connected");
 
-  state.claude = conn({ installed: false });
-  await codex(page).getByRole("button", { name: "Check again" }).click();
-  await expect(claude(page)).toContainText("Not installed");
-  await expect(claude(page).getByRole("link", { name: /Install Claude Code/ })).toHaveAttribute("href", "https://code.claude.com/docs/en/setup");
-
-  state.claude = conn();
-  state.codex = ready({ method: "api_key", plan: null, warnings: ["Transcription is billed to this API key, not to your ChatGPT plan."] });
-  await claude(page).getByRole("button", { name: "Check again" }).click();
-  await expect(claude(page)).toContainText("Not signed in");
-  await expect(claude(page).getByRole("button", { name: "Open Claude Code sign-in" })).toBeVisible();
-  await expect(codex(page)).toContainText("Signed in with an API key");
-  await expect(codex(page).getByRole("alert")).toContainText("billed to this API key");
-  await expect(codex(page).getByRole("button", { name: "Open Codex sign-in" })).toBeVisible();
+  state.codex = ready({ method: "chatgpt", plan: null });
+  await page.route("**/api/transcription-models", (route) => route.fulfill({ json: { configured: APP, models: [] } }));
+  await page.reload();
+  await expect(model(page)).toContainText("gpt-app-model · medium");
+  await expect(model(page)).toContainText("Codex CLI · Your ChatGPT plan");
+  await expect(model(page).getByRole("link", { name: "Check usage" })).toHaveAttribute("href", "https://chatgpt.com/codex/settings/usage");
 });
 
-test("a failed status check is shown with a way to check again", async ({ page }) => {
-  await mockApi(page, { claude: conn({ error: "The sign-in status check failed." }), codex: ready({ method: "chatgpt" }) });
-  await page.goto(ACCOUNTS);
-  await expect(claude(page)).toContainText("Status check failed");
-  await expect(claude(page).getByRole("button", { name: "Check again" })).toBeVisible();
-  await expect(codex(page)).toContainText("Ready");
+test("a program signed in with an API key has no usage link, and its warnings are shown", async ({ page }) => {
+  const warning = "Transcription is billed to this API key, not to your ChatGPT plan.";
+  await mockApi(page, { claude: conn(), codex: ready({ method: "api_key", plan: null, warnings: [warning] }) }, { defaults: APP });
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText(warning);
+  await expect(model(page).getByRole("button", { name: "Test connection" })).toBeVisible();
+  await expect(model(page).getByRole("link", { name: "Check usage" })).toHaveCount(0);
 });
 
-test("signing in sends a JSON POST, polls while waiting, and switches to Ready", async ({ page }) => {
+test("an old program version's warning is shown with the summary", async ({ page }) => {
+  const warning = "Claude Code 2.1.200 is older than 2.1.280, which transcription needs. Update it with: claude update";
+  await mockApi(page, { claude: ready({ version: "2.1.200", warnings: [warning] }), codex: conn() });
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText(warning);
+});
+
+test("a saved provider that isn't connected says so and offers nothing else until Change", async ({ page }) => {
+  await mockApi(page, { claude: conn(), codex: conn() });
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText("Not connected on this computer. Press Change to connect it.");
+  await expect(model(page).getByRole("button", { name: /Test connection|Sign out/ })).toHaveCount(0);
+  await expect(model(page).getByRole("button", { name: "Open Claude Code sign-in" })).toHaveCount(0);
+  await change(page).click();
+  await expect(model(page).getByRole("button", { name: "Open Claude Code sign-in" })).toBeVisible();
+});
+
+test("an API provider's summary offers Remove key only for a key saved here, and says when there is no key", async ({ page }) => {
+  const cases: [string, Options, boolean, boolean][] = [
+    ["saved", { keys: ["openai"] }, true, false],
+    ["from the computer's settings", { envKeys: ["openai"] }, false, false],
+    ["missing", {}, false, true],
+  ];
+  for (const [, options, remove, missing] of cases) {
+    await mockApi(page, { claude: conn(), codex: conn() }, { defaults: OPENAI, ...options });
+    await page.goto("/?view=settings");
+    await expect(model(page)).toContainText("gpt-x");
+    await expect(model(page)).toContainText("OpenAI API · Your own OpenAI API key");
+    await expect(model(page).getByRole("button", { name: "Remove key" })).toHaveCount(remove ? 1 : 0);
+    if (missing) await expect(model(page)).toContainText("Not connected on this computer. Press Change to connect it.");
+    else await expect(model(page)).not.toContainText("Not connected");
+    await page.unroute("**/api/**");
+  }
+});
+
+test("Ollama's summary says it is free and on this computer, and warns when no models are found", async ({ page }) => {
+  const saved = { provider: "ollama", model: "llama3.2-vision", effort: "default" };
+  await mockApi(page, { claude: conn(), codex: conn() }, { defaults: saved, transcriptionOptions: { ...OPTIONS, ollama: apiModels("llama3.2-vision") } });
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText("llama3.2-vision");
+  await expect(model(page)).toContainText("Ollama · Free, on this computer");
+  await expect(model(page)).not.toContainText("Not connected");
+  await page.unroute("**/api/**");
+
+  await mockApi(page, { claude: conn(), codex: conn() }, { defaults: saved, transcriptionOptions: { ...OPTIONS, ollama: NO_MODELS } });
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText("Not connected on this computer. Press Change to connect it.");
+});
+
+test("Change opens the form in place with the saved choice, and Done goes back to the summary", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { transcriptionOptions: OPTIONS });
+  await page.goto("/?view=settings");
+  await expect(field(page, "Model")).toHaveCount(0);
+  await expect(done(page)).toHaveCount(0);
+
+  await change(page).click();
+  await expect(way(page, "Subscription")).toBeChecked();
+  await expect(field(page, "Provider")).toHaveValue("claude");
+  await expect(field(page, "Model")).toHaveValue("claude-saved-model"); // not in the list, but shown rather than replaced
+  await expect(field(page, "Effort")).toHaveValue("high");
+  await expect(change(page)).toHaveCount(0);
+  await expect(way(page, "Subscription")).toBeFocused(); // focus follows the form
+
+  await done(page).click();
+  await expect(model(page)).toContainText("claude-saved-model · high");
+  await expect(field(page, "Model")).toHaveCount(0);
+  await expect(change(page)).toBeFocused();
+  expect(calls.put).toEqual([]);
+});
+
+test("a saved model that isn't in its list is shown, and so is an effort it doesn't list", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() }, { defaults: { ...SAVED, effort: "weird" }, transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await expect(options(page, "Model")).toHaveText(["Choose a model…", "claude-saved-model", "claude-used-1", "opus (latest)", "sonnet (latest)"]);
+  await expect(field(page, "Model")).toHaveValue("claude-saved-model");
+  await expect(options(page, "Effort")).toHaveText(["Choose…", ...EFFORTS, "weird"]);
+  await expect(field(page, "Effort")).toHaveValue("weird");
+});
+
+test("changing the choice saves it as soon as it is complete, and Done shows it", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { defaults: { ...SAVED, model: "opus", effort: "max" }, transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await field(page, "Model").selectOption("sonnet");
+  await expect(field(page, "Effort")).toHaveValue("max"); // sonnet has it too
+  await expect.poll(() => calls.put).toEqual([{ provider: "claude", model: "sonnet", effort: "max" }]);
+  await field(page, "Effort").selectOption("low");
+  await expect.poll(() => calls.put.at(-1)).toEqual({ provider: "claude", model: "sonnet", effort: "low" });
+  await done(page).click();
+  await expect(model(page)).toContainText("sonnet · low");
+});
+
+test("switching model keeps a supported effort and clears an unsupported one, which must be chosen again", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await field(page, "Provider").selectOption("codex");
+  await expect(field(page, "Model")).toHaveValue(""); // another provider: nothing carried over
+  await expect(field(page, "Effort")).toHaveValue("");
+  await field(page, "Model").selectOption("gpt-a");
+  await expect(options(page, "Effort")).toHaveText(["Choose…", "low", "medium"]);
+  await field(page, "Effort").selectOption("low");
+  await expect.poll(() => calls.put).toEqual([{ provider: "codex", model: "gpt-a", effort: "low" }]);
+
+  await field(page, "Model").selectOption("gpt-b");
+  await expect(options(page, "Effort")).toHaveText(["Choose…", "high"]);
+  await expect(field(page, "Effort")).toHaveValue(""); // low isn't supported by gpt-b
+  await page.evaluate(() => 0);
+  expect(calls.put).toHaveLength(1);
+  await field(page, "Effort").selectOption("high");
+  await expect.poll(() => calls.put.at(-1)).toEqual({ provider: "codex", model: "gpt-b", effort: "high" });
+});
+
+test("a model that lists no efforts uses its provider's", async ({ page }) => {
+  const bare = { ...OPTIONS, codex: { ...OPTIONS.codex, models: [{ value: "gpt-c", label: "GPT C", group: "listed", efforts: [], defaultEffort: null }] } };
+  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: bare });
+  await openForm(page);
+  await field(page, "Provider").selectOption("codex");
+  await field(page, "Model").selectOption("gpt-c");
+  await expect(options(page, "Effort")).toHaveText(["Choose…", "low", "medium", "high"]);
+  await expect(field(page, "Effort")).toHaveValue("");
+});
+
+test("going back to the saved way of paying brings back the saved choice, and leaving without choosing changes nothing", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await way(page, "API key").click();
+  await expect(field(page, "Provider")).toHaveValue("gemini");
+  await way(page, "Local").click();
+  await expect(field(page, "Provider")).toHaveCount(0);
+  await way(page, "Subscription").click();
+  await expect(field(page, "Provider")).toHaveValue("claude");
+  await expect(field(page, "Model")).toHaveValue("claude-saved-model");
+  await expect(field(page, "Effort")).toHaveValue("high");
+  await way(page, "API key").click();
+  await done(page).click();
+  await expect(model(page)).toContainText("claude-saved-model · high");
+  expect(calls.put).toEqual([]);
+});
+
+test("an API provider without a key shows the key box; saving a key lists its models", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { transcriptionOptions: keyed });
+  await openForm(page);
+  await way(page, "API key").click();
+  await field(page, "Provider").selectOption("openai");
+  await expect(model(page)).toContainText("No key");
+  await expect(field(page, "Model")).toHaveCount(0);
+  const box = page.getByLabel("OpenAI API key");
+  await expect(box).toHaveAttribute("type", "password");
+  const save = model(page).getByRole("button", { name: "Save", exact: true });
+  await expect(save).toBeDisabled();
+  await expect(model(page).getByRole("link", { name: /Get a key/ })).toHaveAttribute("href", "https://example.com/openai/keys");
+  const asked = calls.options;
+
+  await box.fill("sk-test-123");
+  await save.click();
+  await expect.poll(() => calls.keyPuts).toEqual([{ provider: "openai", body: { key: "sk-test-123" } }]);
+  await expect.poll(() => calls.options).toBeGreaterThan(asked); // the lists are loaded again with the key
+  await expect(options(page, "Model")).toHaveText(["Choose a model…", "gpt-x", "gpt-y"]);
+  await expect(box).toHaveCount(0);
+  await expect(model(page).getByRole("button", { name: "Remove key" })).toBeVisible();
+});
+
+test("a key the API refuses shows the reason and keeps the key box", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() }, { defaults: OPENAI, keyError: "That key was refused." });
+  await openForm(page);
+  const box = page.getByLabel("OpenAI API key");
+  await box.fill("sk-bad");
+  await model(page).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(model(page).getByRole("alert")).toHaveText("That key was refused.");
+  await expect(box).toBeVisible();
+});
+
+test("Remove key asks first, and removing sends an empty key and leaves the provider not connected", async ({ page }) => {
+  const calls = await mockApi(page, { claude: conn(), codex: conn() }, { defaults: OPENAI, keys: ["openai"], transcriptionOptions: keyed });
+  const asked: string[] = [];
+  let accept = false;
+  page.on("dialog", (dialog) => { asked.push(dialog.message()); return accept ? dialog.accept() : dialog.dismiss(); });
+  await page.goto("/?view=settings");
+  await model(page).getByRole("button", { name: "Remove key" }).click();
+  await expect.poll(() => asked).toEqual(["Remove the OpenAI API key saved on this computer?"]);
+  expect(calls.keyPuts).toEqual([]);
+  await expect(model(page).getByRole("button", { name: "Remove key" })).toBeVisible();
+
+  accept = true;
+  await model(page).getByRole("button", { name: "Remove key" }).click();
+  await expect.poll(() => calls.keyPuts).toEqual([{ provider: "openai", body: { key: "" } }]);
+  await expect(model(page)).toContainText("Not connected on this computer. Press Change to connect it.");
+  await expect(model(page).getByRole("button", { name: "Remove key" })).toHaveCount(0);
+});
+
+test("when a connected provider's models can't be listed the model is typed, and saved on Enter", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
+  await page.goto("/?view=settings");
+  await expect(model(page)).toContainText("couldn't be listed");
+  await expect(field(page, "Model")).toHaveAttribute("placeholder", "Model name");
+  await field(page, "Model").fill("typed-model");
+  await field(page, "Effort").fill("medium");
+  expect(calls.put).toEqual([]);
+  await field(page, "Model").press("Enter");
+  await expect.poll(() => calls.put).toEqual([{ provider: "claude", model: "typed-model", effort: "medium" }]);
+  await expect(model(page)).toContainText("typed-model · medium");
+});
+
+test("an API provider whose models can't be listed shows why, and the typed model is saved when the box is left", async ({ page }) => {
+  const broken = { ...OPTIONS, openai: { available: true, models: [], efforts: [], error: "Couldn't read the OpenAI model list." } };
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null, keys: ["openai"], transcriptionOptions: broken });
+  await page.goto("/?view=settings");
+  await way(page, "API key").click();
+  await field(page, "Provider").selectOption("openai");
+  await expect(model(page)).toContainText("Couldn't read the OpenAI model list.");
+  await expect(field(page, "Effort")).toHaveCount(0);
+  await field(page, "Model").fill("gpt-typed");
+  expect(calls.put).toEqual([]);
+  await field(page, "Model").press("Tab");
+  await expect.poll(() => calls.put).toEqual([{ provider: "openai", model: "gpt-typed", effort: "default" }]);
+});
+
+test("Ollama is chosen from the models it lists, with the effort default", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null, transcriptionOptions: { ...OPTIONS, ollama: apiModels("llama3.2-vision") } });
+  await page.goto("/?view=settings");
+  await way(page, "Local").click();
+  await expect(field(page, "Provider")).toHaveCount(0);
+  await field(page, "Model").selectOption("llama3.2-vision");
+  await expect.poll(() => calls.put).toEqual([{ provider: "ollama", model: "llama3.2-vision", effort: "default" }]);
+});
+
+test("without Ollama's models it says how to get them, and Check again looks again", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null, transcriptionOptions: { ...OPTIONS, ollama: NO_MODELS } });
+  await page.goto("/?view=settings");
+  await way(page, "Local").click();
+  await expect(model(page)).toContainText("Install Ollama, then download a model that reads images");
+  await expect(model(page).getByRole("link", { name: "Get Ollama" })).toHaveAttribute("href", "https://ollama.com/download");
+  await expect(field(page, "Model")).toHaveCount(0);
+  const asked = calls.options;
+  await model(page).getByRole("button", { name: "Check again" }).click();
+  await expect.poll(() => calls.options).toBeGreaterThan(asked);
+});
+
+// Page sorting follows the transcription model: opening Settings puts a saved sorting method or model of its own back.
+
+const RESET = { method: "model", sameAsTranscription: true };
+for (const [name, sorting, reset] of [
+  ["on this computer", { method: "local", sorter: null }, true],
+  ["with a model of its own", { method: "model", sorter: { provider: "claude", model: "sonnet", effort: "low" } }, true],
+  ["by the transcription model already", { method: "model", sorter: null }, false],
+] as const) {
+  test(`page sorting saved ${name}: ${reset ? "put back to the transcription model" : "left alone"}`, async ({ page }) => {
+    const calls = await mockApi(page, { claude: ready(), codex: conn() }, { sorting });
+    await page.goto("/?view=settings");
+    await expect.poll(() => calls.sortingGets).toBeGreaterThan(0);
+    await page.waitForLoadState("networkidle");
+    expect(calls.sortingPuts.length > 0).toBe(reset);
+    for (const put of calls.sortingPuts) expect(put).toEqual(RESET); // twice in development, where effects run twice
+  });
+}
+
+// Connecting a provider from the form: a program's sign-in, or its install.
+
+test("signing in sends a JSON POST, polls while waiting, and then the model can be chosen", async ({ page }) => {
   await page.clock.install();
   const state: State = { claude: conn(), codex: ready({ method: "chatgpt" }) };
-  const calls = await mockApi(page, state);
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Open Claude Code sign-in" }).click();
-  await expect(claude(page).getByText("Finish signing in in the browser window that opened.")).toBeVisible();
-  await expect(claude(page).getByRole("button", { name: "Cancel" })).toBeVisible();
-  await expect(claude(page).locator("code")).toHaveText(["claude auth login"]);
+  const calls = await mockApi(page, state, { transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await expect(model(page)).toContainText("Not signed in");
+  await model(page).getByRole("button", { name: "Open Claude Code sign-in" }).click();
+  await expect(model(page).getByText("Finish signing in in the browser window that opened.")).toBeVisible();
+  await expect(model(page).getByRole("button", { name: "Cancel" })).toBeVisible();
+  await expect(model(page).locator("code")).toHaveText(["claude auth login"]);
   expect(calls.post).toEqual(["claude"]);
   expect(calls.loginBody).toEqual([{}]);
   await expect.poll(() => calls.get).toBeGreaterThan(1);
@@ -248,8 +667,8 @@ test("signing in sends a JSON POST, polls while waiting, and switches to Ready",
   await expect.poll(() => calls.get).toBeGreaterThan(before);
   state.claude = ready({ login: { running: false, exitCode: 0 } });
   await page.clock.runFor(2000);
-  await expect(claude(page)).toContainText("Ready");
-  await expect(claude(page).getByText("Finish signing in")).toHaveCount(0);
+  await expect(field(page, "Model")).toBeVisible();
+  await expect(model(page).getByText("Finish signing in")).toHaveCount(0);
 
   const settled = calls.get;
   await page.clock.runFor(10000);
@@ -260,8 +679,8 @@ test("signing in sends a JSON POST, polls while waiting, and switches to Ready",
 test("no polling while nothing is signing in, and a window focus reloads", async ({ page }) => {
   await page.clock.install();
   const calls = await mockApi(page, { claude: conn(), codex: conn() });
-  await page.goto(ACCOUNTS);
-  await expect(claude(page)).toContainText("Not signed in");
+  await openForm(page);
+  await expect(model(page)).toContainText("Not signed in");
   const loaded = calls.get;
   await page.clock.runFor(10000);
   await page.evaluate(() => 0);
@@ -272,440 +691,105 @@ test("no polling while nothing is signing in, and a window focus reloads", async
 
 test("Cancel sends a DELETE and returns to the sign-in button", async ({ page }) => {
   const calls = await mockApi(page, { claude: conn({ login: { running: true, exitCode: null } }), codex: conn() });
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Cancel" }).click();
-  await expect(claude(page).getByRole("button", { name: "Open Claude Code sign-in" })).toBeVisible();
+  await openForm(page);
+  await model(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(model(page).getByRole("button", { name: "Open Claude Code sign-in" })).toBeVisible();
   expect(calls.delete).toEqual(["claude"]);
-  await expect(claude(page).getByText("Finish signing in")).toHaveCount(0);
+  await expect(model(page).getByText("Finish signing in")).toHaveCount(0);
 });
 
 test("a sign-in that ended with an error while still signed out shows an alert", async ({ page }) => {
-  await mockApi(page, { claude: conn(), codex: conn({ login: { running: false, exitCode: 1 } }) });
-  await page.goto(ACCOUNTS);
-  await expect(codex(page).getByRole("alert")).toHaveText("Sign-in didn't finish. Try again, or run codex login in a terminal.");
-  await expect(codex(page).getByRole("button", { name: "Open Codex sign-in" })).toBeVisible();
-  await expect(claude(page).getByRole("alert")).toHaveCount(0);
+  await mockApi(page, { claude: conn(), codex: conn({ login: { running: false, exitCode: 1 } }) }, { defaults: APP });
+  await openForm(page);
+  await expect(model(page).getByRole("alert")).toHaveText("Sign-in didn't finish. Try again, or run codex login in a terminal.");
+  await expect(model(page).getByRole("button", { name: "Open Codex sign-in" })).toBeVisible();
 });
 
-const field = (page: Page, name: string) => page.getByLabel(name, { exact: true });
-const defaultsCard = (page: Page) => page.locator("[data-slot=card]", { hasText: "Save defaults" });
-
-test("nothing is chosen until the team saves a choice: it says so and has no Reset button", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
-  await page.goto("/?view=settings");
-  await expect(page.getByRole("heading", { name: "Transcription model" })).toBeVisible();
-  await expect(banner(page).getByRole("heading", { name: "Finish setup to start transcribing" })).toBeVisible();
-  await expect(page.getByText("Ready to transcribe")).toHaveCount(0);
-  await expect(field(page, "Provider")).toHaveValue("");
-  await expect(field(page, "Model")).toHaveValue("");
-  await expect(field(page, "Effort")).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Save defaults" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /Reset/ })).toHaveCount(0);
-  await expect(usedTag(page)).toHaveCount(0);
-  expect(calls.put).toEqual([]);
+test("a failed status check is shown with a way to check again", async ({ page }) => {
+  const state: State = { claude: conn({ error: "The sign-in status check failed." }), codex: ready({ method: "chatgpt" }) };
+  const calls = await mockApi(page, state);
+  await openForm(page);
+  await expect(model(page)).toContainText("Status check failed");
+  await expect(model(page)).toContainText("The sign-in status check failed.");
+  await expect(model(page).getByRole("button", { name: "Open Claude Code sign-in" })).toHaveCount(0);
+  const loaded = calls.get;
+  state.claude = conn();
+  await model(page).getByRole("button", { name: "Check again" }).click();
+  await expect.poll(() => calls.get).toBeGreaterThan(loaded);
+  await expect(model(page)).toContainText("Not signed in");
 });
 
-test("the saved choice is shown with the section note and the ready line", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(page.getByText("Used for new transcriptions. Shared with the team.")).toBeVisible();
-  await expect(readyLine(page)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Finish setup to start transcribing" })).toHaveCount(0);
-  await expect(field(page, "Provider")).toHaveValue("claude");
-  await expect(field(page, "Model")).toHaveValue("claude-saved-model");
-  await expect(field(page, "Effort")).toHaveValue("high");
-  await expect(page.getByRole("button", { name: /Reset/ })).toHaveCount(0);
+test("a program that isn't installed links to its install page, and Check again finds it", async ({ page }) => {
+  const state: State = { claude: ready(), codex: conn({ installed: false }) };
+  await mockApi(page, state, { defaults: APP });
+  await openForm(page);
+  await expect(model(page)).toContainText("Not installed");
+  await expect(model(page).getByRole("link", { name: /Install Codex CLI/ })).toHaveAttribute("href", "https://developers.openai.com/codex/cli");
+  state.codex = conn();
+  await model(page).getByRole("button", { name: "Check again" }).click();
+  await expect(model(page)).toContainText("Not signed in");
+  await expect(model(page).getByRole("button", { name: "Open Codex sign-in" })).toBeVisible();
 });
 
-test("Save needs all three chosen, then sends them and shows Saved ✓", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt", version: "0.12.3" }) }, { defaults: null });
-  await page.goto("/?view=settings");
-  const save = page.getByRole("button", { name: "Save defaults" });
-  await field(page, "Provider").selectOption("codex");
-  await expect(field(page, "Model")).toHaveValue("");
-  await expect(save).toBeDisabled();
-  await field(page, "Model").fill(" gpt-app-model ");
-  await expect(save).toBeDisabled(); // no effort yet
-  await field(page, "Effort").fill("medium");
-  await expect(save).toBeEnabled();
-  await field(page, "Model").fill("");
-  await expect(save).toBeDisabled();
-  await field(page, "Model").fill(" gpt-app-model ");
-  await save.click();
-  await expect(readyLine(page)).toHaveText("Ready to transcribe · gpt-app-model · medium on Codex CLI");
-  await expect(page.getByRole("status").filter({ hasText: "Saved ✓" })).toBeVisible();
-  expect(calls.put).toEqual([{ provider: "codex", model: "gpt-app-model", effort: "medium" }]);
-  await expect(field(page, "Provider")).toHaveValue("codex");
-  await expect(field(page, "Model")).toHaveValue("gpt-app-model");
-  await expect(page.getByRole("button", { name: /Reset/ })).toHaveCount(0);
-  await expect(defaultsCard(page).getByRole("alert")).toHaveCount(0);
-  await expect(save).toBeDisabled();
-  expect(calls.deletes).toBe(0);
-});
-
-test("with the model lists, nothing is picked for you: the dropdowns start on Choose…", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { defaults: null, transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  const save = page.getByRole("button", { name: "Save defaults" });
-  for (const label of ["Provider", "Model", "Effort"]) await expect(field(page, label)).toHaveValue("");
-  expect(await optionTexts(page, "Provider")).toEqual(["Choose…", "Claude Code", "Codex CLI", "Claude API", "OpenAI API", "Gemini API", "OpenRouter", "Ollama (this computer)"]);
-  await field(page, "Provider").selectOption("claude");
-  expect(await optionTexts(page, "Model")).toEqual(["Choose…", "claude-used-1", "opus (latest)", "sonnet (latest)", "Other…"]);
-  await expect(field(page, "Model")).toHaveValue("");
-  await expect(field(page, "Effort")).toHaveValue("");
-  await expect(save).toBeDisabled();
-  await field(page, "Model").selectOption("opus");
-  await expect(field(page, "Effort")).toHaveValue(""); // not filled in either
-  expect(await optionTexts(page, "Effort")).toEqual(["Choose…", ...EFFORTS]);
-  await expect(save).toBeDisabled();
-  await field(page, "Effort").selectOption("low");
-  expect(await optionTexts(page, "Effort")).toEqual(EFFORTS);
-  await expect(save).toBeEnabled();
-  await save.click();
-  await expect(page.getByText("Saved ✓")).toBeVisible();
-  expect(calls.put).toEqual([{ provider: "claude", model: "opus", effort: "low" }]);
-});
-
-test("a save the API refuses shows its message and keeps what was typed", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() }, { saveError: "Enter a valid model name." });
-  await page.goto("/?view=settings");
-  await field(page, "Model").fill("two words");
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(defaultsCard(page).getByRole("alert")).toHaveText("Enter a valid model name.");
-  await expect(field(page, "Model")).toHaveValue("two words");
-  await expect(readyLine(page)).toHaveText("Ready to transcribe · claude-saved-model · high on Claude Code");
-  await expect(page.getByText("Saved ✓")).toHaveCount(0);
-});
-
-test("choosing a provider that isn't ready warns", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(defaultsCard(page).getByRole("alert")).toHaveCount(0);
-  await field(page, "Provider").selectOption("codex");
-  await expect(defaultsCard(page).getByRole("alert")).toContainText("Codex CLI isn't ready (not signed in)");
-  await field(page, "Provider").selectOption("claude");
-  await expect(defaultsCard(page).getByRole("alert")).toHaveCount(0);
-});
-
-test("a signed-in card shows plan and version, then buttons and the usage link", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt", plan: null, version: "0.12.3" }) });
-  await page.goto(ACCOUNTS);
-  await expect(claude(page).locator("[data-slot=card-description]")).toHaveText("Max plan · 2.1.288");
-  await expect(codex(page).locator("[data-slot=card-description]")).toHaveText("ChatGPT plan · 0.12.3");
-  await expect(claude(page).getByRole("button")).toHaveText(["Test connection", "Sign out"]);
-  await expect(claude(page).getByRole("link", { name: "Check usage" })).toHaveAttribute("href", "https://claude.ai/settings/usage");
-  await expect(codex(page).getByRole("link", { name: "Check usage" })).toHaveAttribute("href", "https://chatgpt.com/codex/settings/usage");
-  for (const card of [claude(page), codex(page)]) {
-    const link = card.getByRole("link", { name: "Check usage" });
-    await expect(link).toHaveAttribute("target", "_blank");
-    await expect(link).toHaveAttribute("rel", /noopener/);
-  }
-});
-
-test("no usage link for an API key or when not signed in, and no buttons unless signed in", async ({ page }) => {
-  await mockApi(page, { claude: conn({ version: "2.1.288" }), codex: ready({ method: "api_key", plan: null }) });
-  await page.goto(ACCOUNTS);
-  await expect(claude(page)).toContainText("Not signed in");
-  await expect(claude(page).locator("[data-slot=card-description]")).toHaveText("2.1.288");
-  await expect(claude(page).getByRole("link", { name: "Check usage" })).toHaveCount(0);
-  await expect(claude(page).getByRole("button", { name: /Test connection|Sign out/ })).toHaveCount(0);
-  await expect(codex(page).getByRole("link", { name: "Check usage" })).toHaveCount(0);
-  await expect(codex(page).getByRole("button", { name: "Test connection" })).toBeVisible();
-});
-
-test("an old Claude Code version is flagged", async ({ page }) => {
-  const warning = "Claude Code 2.1.200 is older than 2.1.280, which transcription needs. Update it with: claude update";
-  await mockApi(page, { claude: ready({ version: "2.1.200", warnings: [warning] }), codex: conn({ installed: false }) });
-  await page.goto(ACCOUNTS);
-  await expect(claude(page).getByRole("alert")).toHaveText(warning);
-  await expect(claude(page).locator("[data-slot=card-description]")).toHaveText("Max plan · 2.1.200");
+test("a signed-in program's Sign out is available in the form too", async ({ page }) => {
+  await mockApi(page, { claude: ready(), codex: conn() }, { transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await expect(field(page, "Model")).toBeVisible();
+  await expect(model(page).getByRole("button", { name: "Test connection" })).toBeVisible();
+  await expect(model(page).getByRole("button", { name: "Sign out" })).toBeVisible();
 });
 
 test("Sign out asks first, and Cancel sends nothing", async ({ page }) => {
   const calls = await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Sign out" }).click();
+  await page.goto("/?view=settings");
+  await model(page).getByRole("button", { name: "Sign out" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "Sign out of Claude Code?" })).toBeVisible();
   await expect(dialog).toContainText("This signs Claude Code out on this computer, including in your terminal. Transcription with it stops until you sign in again.");
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toHaveCount(0);
   expect(calls.logout).toEqual([]);
-  await expect(claude(page)).toContainText("Ready");
+  await expect(model(page).getByRole("button", { name: "Sign out" })).toBeVisible();
 });
 
-test("confirming Sign out sends a JSON POST and the card goes back to not signed in", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Sign out" }).click();
+test("confirming Sign out sends a JSON POST, and the form then asks to sign in again", async ({ page }) => {
+  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { transcriptionOptions: OPTIONS });
+  await openForm(page);
+  await model(page).getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(claude(page)).toContainText("Not signed in");
-  await expect(claude(page).getByRole("button", { name: "Open Claude Code sign-in" })).toBeVisible();
+  await expect(model(page)).toContainText("Not signed in");
+  await expect(model(page).getByRole("button", { name: "Open Claude Code sign-in" })).toBeVisible();
+  await expect(field(page, "Model")).toHaveCount(0);
   expect(calls.logout).toEqual(["claude"]);
   expect(calls.logoutBody).toEqual([{}]);
 });
 
-test("Test connection shows a spinner, then the time and model", async ({ page }) => {
+test("Test connection shows it is waiting, then the time it took", async ({ page }) => {
   const calls = await mockApi(page, { claude: ready(), codex: conn() }, { gateTests: true });
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Test connection" }).click();
-  await expect(claude(page).getByText("Waiting for a reply…")).toBeVisible();
-  await expect(claude(page).getByRole("button", { name: "Test connection" })).toBeDisabled();
+  await page.goto("/?view=settings");
+  await model(page).getByRole("button", { name: "Test connection" }).click();
+  await expect(model(page).getByRole("button", { name: "Testing…" })).toBeDisabled();
   calls.release();
-  await expect(claude(page).getByText("Works · replied in 3.2 s (haiku)")).toBeVisible();
-  await expect(claude(page).getByText("Waiting for a reply…")).toHaveCount(0);
+  await expect(model(page).getByRole("status")).toHaveText("Works · replied in 3.2 s");
+  await expect(model(page).getByRole("button", { name: "Test connection" })).toBeEnabled();
   expect(calls.tests).toEqual(["claude"]);
   expect(calls.testBody).toEqual([{}]);
 });
 
-test("a failed test shows the message in an alert", async ({ page }) => {
+test("a failed test shows the message", async ({ page }) => {
   await mockApi(page, { claude: ready(), codex: conn() },
     { testReply: { ok: false, seconds: 1.4, model: "haiku", message: "Not logged in. Please run /login" } });
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Test connection" }).click();
-  await expect(claude(page).getByRole("alert")).toHaveText("Not logged in. Please run /login");
-  await expect(claude(page).getByText(/^Works/)).toHaveCount(0);
+  await page.goto("/?view=settings");
+  await model(page).getByRole("button", { name: "Test connection" }).click();
+  await expect(model(page).getByRole("status")).toHaveText("Not logged in. Please run /login");
 });
 
 test("a test the API refuses (another one running) shows the reason", async ({ page }) => {
   await mockApi(page, { claude: ready(), codex: conn() }, { testStatus: 409, testReply: { detail: "A test is already running." } });
-  await page.goto(ACCOUNTS);
-  await claude(page).getByRole("button", { name: "Test connection" }).click();
-  await expect(claude(page).getByRole("alert")).toHaveText("A test is already running.");
-});
-
-test("the app's name returns to the series list", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
   await page.goto("/?view=settings");
-  await page.getByRole("link", { name: "PrestCribe" }).click();
-  await expect(page.getByRole("heading", { name: "Series", level: 1 })).toBeVisible();
-});
-
-test("the top bar's Settings opens the settings page", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?series=1");
-  await page.getByRole("banner").getByRole("link", { name: "Settings" }).click();
-  await expect(page).toHaveURL(/\/\?view=settings$/);
-  await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
-  await expect(tab(page, "Transcription")).toHaveAttribute("aria-selected", "true");
-});
-
-const optionTexts = (page: Page, label: string) => field(page, label).locator("option").allTextContents();
-const groupLabels = (page: Page, label: string) => field(page, label).locator("optgroup").evaluateAll((groups) => groups.map((g) => g.getAttribute("label")));
-
-test("the model dropdown groups used, latest and Other, and the effort dropdown lists the efforts", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { defaults: { ...SAVED, model: "opus" }, transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  await expect(field(page, "Model")).toHaveValue("opus");
-  expect(await groupLabels(page, "Model")).toEqual(["Used in this project", "Claude Code's names"]);
-  expect(await optionTexts(page, "Model")).toEqual(["claude-used-1", "opus (latest)", "sonnet (latest)", "Other…"]);
-  expect(await optionTexts(page, "Effort")).toEqual(EFFORTS);
-  await expect(field(page, "Effort")).toHaveValue("high");
-  await expect(page.getByLabel("Custom model name")).toHaveCount(0);
-});
-
-test("choosing a Codex model shows its efforts, and switching models keeps a supported effort and clears an unsupported one", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  await field(page, "Provider").selectOption("codex");
-  expect(await groupLabels(page, "Model")).toEqual(["From Codex"]);
-  await expect(field(page, "Model")).toHaveValue(""); // nothing picked for you
-  await expect(field(page, "Effort")).toHaveValue("");
-  await field(page, "Model").selectOption("gpt-a");
-  expect(await optionTexts(page, "Effort")).toEqual(["Choose…", "low", "medium"]);
-  await expect(field(page, "Effort")).toHaveValue(""); // not even the model's default
-  await field(page, "Effort").selectOption("low");
-  await field(page, "Model").selectOption("gpt-b");
-  expect(await optionTexts(page, "Effort")).toEqual(["Choose…", "high"]);
-  await expect(field(page, "Effort")).toHaveValue(""); // low isn't supported by gpt-b
-  await expect(page.getByRole("button", { name: "Save defaults" })).toBeDisabled();
-  await field(page, "Effort").selectOption("high");
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(page.getByText("Saved ✓")).toBeVisible();
-  expect(calls.put).toEqual([{ provider: "codex", model: "gpt-b", effort: "high" }]);
-});
-
-test("changing provider clears the model and effort, and a supported effort is kept when the model changes", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { defaults: { ...SAVED, model: "opus", effort: "max" }, transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  await field(page, "Model").selectOption("sonnet");
-  await expect(field(page, "Effort")).toHaveValue("max");
-  await field(page, "Provider").selectOption("codex");
-  await expect(field(page, "Model")).toHaveValue("");
-  await expect(field(page, "Effort")).toHaveValue("");
-  await field(page, "Provider").selectOption("claude");
-  await expect(field(page, "Model")).toHaveValue("");
-  await expect(field(page, "Effort")).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Save defaults" })).toBeDisabled();
-});
-
-test("Other… shows a text box and saves the custom name", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: { ...SAVED, model: "opus" }, transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  await field(page, "Model").selectOption({ label: "Other…" });
-  const custom = page.getByLabel("Custom model name");
-  await expect(custom).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Save defaults" })).toBeDisabled();
-  await custom.fill(" claude-custom-9 ");
-  await field(page, "Effort").selectOption("max");
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(page.getByText("Saved ✓")).toBeVisible();
-  expect(calls.put).toEqual([{ provider: "claude", model: "claude-custom-9", effort: "max" }]);
-  await expect(field(page, "Model").locator("option:checked")).toHaveText("Other…");
-  await expect(page.getByLabel("Custom model name")).toHaveValue("claude-custom-9");
-  await field(page, "Model").selectOption("sonnet");
-  await expect(page.getByLabel("Custom model name")).toHaveCount(0);
-});
-
-test("a saved default that isn't in the list preselects Other… with its name", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() }, { defaults: { ...SAVED, model: "claude-saved-model", effort: "weird" }, transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  await expect(field(page, "Model").locator("option:checked")).toHaveText("Other…");
-  await expect(page.getByLabel("Custom model name")).toHaveValue("claude-saved-model");
-  expect(await optionTexts(page, "Effort")).toEqual([...EFFORTS, "weird"]); // what is saved is shown, not replaced
-  await expect(field(page, "Effort")).toHaveValue("weird");
-});
-
-test("a provider whose options have an error falls back to text boxes and shows it", async ({ page }) => {
-  const broken = { ...OPTIONS, codex: { available: true, models: [], efforts: [], error: "Couldn't read Codex's model list." } };
-  const calls = await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: broken });
-  await page.goto("/?view=settings");
-  await expect(field(page, "Model").locator("optgroup").first()).toBeAttached(); // claude still has its dropdowns
-  await field(page, "Provider").selectOption("codex");
-  await expect(field(page, "Model")).toHaveValue("");
-  await field(page, "Model").fill("gpt-typed");
-  await field(page, "Effort").fill("medium");
-  await expect(defaultsCard(page).getByText("Couldn't read Codex's model list.")).toBeVisible();
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(page.getByText("Saved ✓")).toBeVisible();
-  expect(calls.put).toEqual([{ provider: "codex", model: "gpt-typed", effort: "medium" }]);
-});
-
-test("options that fail to load leave the text boxes", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(field(page, "Model")).toHaveValue("claude-saved-model");
-  await expect(field(page, "Effort")).toHaveValue("high");
-  await expect(field(page, "Model").locator("option")).toHaveCount(0);
-  await expect(defaultsCard(page).getByText("The model lists couldn't be loaded.")).toBeVisible();
-});
-
-test("a model that lists no efforts uses its provider's", async ({ page }) => {
-  const bare = { ...OPTIONS, codex: { ...OPTIONS.codex, models: [{ value: "gpt-c", label: "GPT C", group: "listed", efforts: [], defaultEffort: null }] } };
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: bare });
-  await page.goto("/?view=settings");
-  await field(page, "Provider").selectOption("codex");
-  await field(page, "Model").selectOption("gpt-c");
-  expect(await optionTexts(page, "Effort")).toEqual(["Choose…", "low", "medium", "high"]);
-  await expect(field(page, "Effort")).toHaveValue("");
-});
-
-const NOTE = "Sends one tiny request on your plan.";
-const usedTag = (scope: Page | ReturnType<typeof claude>) => scope.getByText("Used for transcription", { exact: true });
-const cardLine = (card: ReturnType<typeof claude>) => card.locator("[data-slot=card-description]");
-
-test("the page has a Settings heading and subtitle above the tabs, and each tab has its sections' headings", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
-  await expect(page.locator("h1")).toHaveCount(1);
-  await expect(page.getByText("How pages are read, and the accounts that read them", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "PrestCribe" })).toBeVisible();
-  const headings = [["Transcription", ["Transcription model", "Page sorting"]], ["Accounts and API keys", ["Accounts", "API keys"]],
-    ["About", ["PrestCribe v0.2.0", "Where your files are", "Help"]]] as const;
-  for (const [name, titles] of headings) {
-    await tab(page, name).click();
-    for (const title of titles) await expect(panel(page, name).getByRole("heading", { name: title, level: 2 })).toBeVisible();
-  }
-});
-
-test("Settings has three tabs, Transcription first, and the other tabs' sections stay on the page, hidden", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(page.getByRole("tablist", { name: "Settings" }).getByRole("tab")).toHaveText(TABS);
-  await expect(tab(page, "Transcription")).toHaveAttribute("aria-selected", "true");
-  for (const id of ["transcription-defaults", "page-sorting"]) await expect(page.locator(`section#${id}`)).toBeVisible();
-  for (const id of ["connections", "api-keys", "updates", "folders", "help"]) {
-    await expect(page.locator(`section#${id}`)).toHaveCount(1);
-    await expect(page.locator(`section#${id}`)).toBeHidden();
-  }
-});
-
-test("a tab opens from ?tab=, clicking one shows it and puts it in the URL, and an unknown tab is Transcription", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto(ACCOUNTS);
-  await expect(tab(page, "Accounts and API keys")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("section#connections")).toBeVisible();
-  await expect(page.locator("section#transcription-defaults")).toBeHidden();
-
-  await tab(page, "About").click();
-  await expect(page).toHaveURL(/\/\?view=settings&tab=about$/);
-  await expect(page.locator("section#updates")).toBeVisible();
-  await expect(page.locator("section#connections")).toBeHidden();
-  await tab(page, "Transcription").click();
-  await expect(page).toHaveURL(/\/\?view=settings&tab=transcription$/);
-  await expect(page.locator("section#transcription-defaults")).toBeVisible();
-
-  await page.goto("/?view=settings&tab=nonsense");
-  await expect(tab(page, "Transcription")).toHaveAttribute("aria-selected", "true");
-  await page.goto(ABOUT);
-  await expect(tab(page, "About")).toHaveAttribute("aria-selected", "true");
-});
-
-test("switching tabs loads nothing again and keeps what was typed", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(page.locator("section#connections")).toContainText("Ready"); // the Accounts tab is loaded while it is hidden
-  const loaded = calls.get;
-  await field(page, "Model").fill("typed-model");
-  await tab(page, "Accounts and API keys").click();
-  await expect(claude(page).getByRole("button", { name: "Test connection" })).toBeVisible();
-  await tab(page, "About").click();
-  await expect(page.locator("section#updates")).toContainText("Up to date");
-  await tab(page, "Transcription").click();
-  await expect(field(page, "Model")).toHaveValue("typed-model");
-  expect(calls.get).toBe(loaded);
-});
-
-test("the Used for transcription tag shows only once a choice is saved, then follows the saved provider", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { defaults: null });
-  await page.goto("/?view=settings");
-  await expect(banner(page)).toBeVisible();
-  await expect(usedTag(page)).toHaveCount(0);
-
-  await field(page, "Provider").selectOption("codex"); // an unsaved edit doesn't show the tag
-  await field(page, "Model").fill("gpt-app-model");
-  await field(page, "Effort").fill("medium");
-  await expect(usedTag(page)).toHaveCount(0);
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(page.getByText("Saved ✓")).toBeVisible();
-  await expect(usedTag(page)).toHaveCount(1);
-  await tab(page, "Accounts and API keys").click();
-  await expect(usedTag(codex(page))).toBeVisible();
-  await expect(usedTag(claude(page))).toHaveCount(0);
-
-  await tab(page, "Transcription").click();
-  await field(page, "Provider").selectOption("claude"); // an unsaved edit doesn't move it
-  await tab(page, "Accounts and API keys").click();
-  await expect(usedTag(codex(page))).toBeVisible();
-  await tab(page, "Transcription").click();
-  await field(page, "Model").fill("claude-saved-model");
-  await field(page, "Effort").fill("high");
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(page.getByText("Saved ✓")).toBeVisible();
-  await tab(page, "Accounts and API keys").click();
-  await expect(usedTag(page)).toHaveCount(1);
-  await expect(usedTag(claude(page))).toBeVisible();
-  await expect(usedTag(codex(page))).toHaveCount(0);
-});
-
-test("the Used for transcription tag is on the saved provider's card from the start", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) });
-  await page.goto(ACCOUNTS);
-  await expect(usedTag(page)).toHaveCount(1);
-  await expect(usedTag(claude(page))).toBeVisible();
-  await expect(usedTag(codex(page))).toHaveCount(0);
+  await model(page).getByRole("button", { name: "Test connection" }).click();
+  await expect(model(page).getByRole("status")).toHaveText("A test is already running.");
 });
 
 const updates = (page: Page) => page.locator("section#updates");
@@ -995,506 +1079,4 @@ test("What's new links to the latest release's notes on GitHub, in a new tab", a
   const link = updates(page).getByRole("link", { name: "What's new in v0.2.0" });
   await expect(link).toHaveAttribute("href", LATEST_RELEASE);
   await expect(link).toHaveAttribute("target", "_blank");
-});
-
-test("the line under each title is the plan and the version, leaving out what is unknown", async ({ page }) => {
-  const state: State = { claude: ready(), codex: ready({ method: "chatgpt", plan: null, version: "0.163.0" }) };
-  await mockApi(page, state);
-  await page.goto(ACCOUNTS);
-  await expect(cardLine(claude(page))).toHaveText("Max plan · 2.1.288");
-  await expect(cardLine(codex(page))).toHaveText("ChatGPT plan · 0.163.0");
-
-  state.claude = ready({ plan: "pro" });
-  state.codex = ready({ method: "api_key", plan: null, version: "0.163.0" });
-  await page.reload();
-  await expect(cardLine(claude(page))).toHaveText("Pro plan · 2.1.288");
-  await expect(cardLine(codex(page))).toHaveText("API key · 0.163.0");
-
-  state.claude = ready({ plan: null });
-  state.codex = ready({ method: "api_key", plan: null, version: null });
-  await page.reload();
-  await expect(cardLine(claude(page))).toHaveText("2.1.288");
-  await expect(cardLine(codex(page))).toHaveText("API key");
-});
-
-test("Sign out is red, apart from the other buttons, and still asks before sending anything", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto(ACCOUNTS);
-  const signOut = claude(page).getByRole("button", { name: "Sign out" });
-  await expect(signOut).toHaveClass(/text-destructive/);
-  const testButton = (await claude(page).getByRole("button", { name: "Test connection" }).boundingBox())!;
-  const usage = (await claude(page).getByRole("link", { name: "Check usage" }).boundingBox())!;
-  const out = (await signOut.boundingBox())!;
-  expect(out.x).toBeGreaterThan(usage.x + usage.width + 40);
-  expect(out.y).toBeLessThan(testButton.y + testButton.height);
-  await signOut.click();
-  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
-  expect(calls.logout).toEqual([]);
-});
-
-test("every badge keeps its text and has an icon that screen readers skip", async ({ page }) => {
-  const state: State = { claude: ready(), codex: ready({ method: "api_key", plan: null }) };
-  await mockApi(page, state);
-  await page.goto(ACCOUNTS);
-  const badge = (card: ReturnType<typeof claude>) => card.locator("[data-slot=badge]").filter({ hasNotText: "Used for transcription" });
-  const states: [State["claude"], State["codex"], string, string][] = [
-    [ready(), ready({ method: "api_key", plan: null }), "Ready", "Signed in with an API key"],
-    [conn(), conn({ installed: false }), "Not signed in", "Not installed"],
-    [conn({ error: "The sign-in status check failed." }), conn(), "Status check failed", "Not signed in"],
-  ];
-  for (const [c, x, claudeText, codexText] of states) {
-    state.claude = c;
-    state.codex = x;
-    await page.reload();
-    for (const [card, text] of [[claude(page), claudeText], [codex(page), codexText]] as const) {
-      await expect(badge(card)).toHaveText(text);
-      await expect(badge(card).locator("svg")).toHaveCount(1);
-      await expect(badge(card).locator("svg")).toHaveAttribute("aria-hidden", "true");
-    }
-  }
-});
-
-test("Test connection explains itself in a tooltip on hover and on keyboard focus, and the note appears nowhere else", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) });
-  await page.goto(ACCOUNTS);
-  const button = claude(page).getByRole("button", { name: "Test connection" });
-  const tip = page.locator("[data-slot=tooltip-content]");
-  await expect(button).toHaveAccessibleDescription(NOTE); // also while the tooltip is closed
-  await expect(tip).toHaveCount(0);
-  await expect(page.locator("p", { hasText: NOTE })).toHaveCount(0);
-
-  await button.hover();
-  await expect(tip).toBeVisible();
-  await expect(tip).toContainText(NOTE);
-  await expect(button).toHaveAccessibleDescription(new RegExp(NOTE));
-  await page.mouse.move(0, 0, { steps: 10 });
-  await expect(tip).toHaveCount(0);
-
-  await codex(page).getByRole("button", { name: "Test connection" }).focus();
-  await expect(tip).toBeVisible();
-  await expect(tip).toContainText(NOTE);
-  await page.keyboard.press("Escape");
-  await expect(tip).toHaveCount(0);
-  await expect(page.locator("p", { hasText: NOTE })).toHaveCount(0);
-});
-
-test("Save is disabled until something changed, and Saved ✓ shows until the next edit", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: OPTIONS, defaults: { ...SAVED, model: "opus", effort: "high" } });
-  await page.goto("/?view=settings");
-  const save = page.getByRole("button", { name: "Save defaults" });
-  await expect(field(page, "Model")).toHaveValue("opus");
-  await expect(save).toBeDisabled();
-  await field(page, "Effort").selectOption("low");
-  await expect(save).toBeEnabled();
-  await field(page, "Effort").selectOption("high");
-  await expect(save).toBeDisabled();
-  await expect(defaultsCard(page).locator("[role=status]")).toHaveText(""); // the live region is there before it has text
-
-  await field(page, "Effort").selectOption("max");
-  await save.click();
-  await expect(page.getByRole("status").filter({ hasText: "Saved ✓" })).toBeVisible();
-  await expect(save).toBeDisabled();
-  await field(page, "Effort").selectOption("low");
-  await expect(page.getByText("Saved ✓")).toHaveCount(0);
-  await expect(save).toBeEnabled();
-
-  await field(page, "Effort").selectOption("max");
-  await field(page, "Model").selectOption({ label: "Other…" });
-  await page.getByLabel("Custom model name").fill("claude-custom-9");
-  await expect(save).toBeEnabled(); // custom text counts as a change
-});
-
-test("the defaults are one row across the page on a wide screen and stack on a phone", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) }, { transcriptionOptions: OPTIONS });
-  const controls = async () => {
-    const boxes = [];
-    for (const l of [field(page, "Provider"), field(page, "Model"), field(page, "Effort"), page.getByRole("button", { name: "Save defaults" })]) boxes.push((await l.boundingBox())!);
-    return boxes;
-  };
-
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/?view=settings");
-  await expect(field(page, "Model")).toBeVisible();
-  const [provider, model, effort, save] = await controls();
-  expect(Math.abs(model.y - provider.y)).toBeLessThan(4);
-  expect(Math.abs(effort.y - provider.y)).toBeLessThan(4);
-  expect(Math.abs(save.y + save.height - (provider.y + provider.height))).toBeLessThan(4);
-  expect(provider.x).toBeLessThan(model.x);
-  expect(model.x).toBeLessThan(effort.x);
-  expect(effort.x).toBeLessThan(save.x);
-  expect(model.width).toBeGreaterThan(provider.width);
-  const card = (await defaultsCard(page).boundingBox())!;
-  expect(card.width).toBeGreaterThan(1300); // the page is the window's full width
-  expect(save.x + save.width).toBeGreaterThan(card.x + card.width - 40); // the row spans the card
-
-  await page.setViewportSize({ width: 375, height: 800 });
-  const stacked = await controls();
-  for (let i = 1; i < 4; i++) expect(stacked[i].y).toBeGreaterThan(stacked[i - 1].y + stacked[i - 1].height - 1);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-});
-
-test("the tag stays on the saved provider's card when that provider isn't installed", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn({ installed: false }) }, { defaults: APP });
-  await page.goto(ACCOUNTS);
-  await expect(usedTag(page)).toHaveCount(1);
-  await expect(usedTag(codex(page))).toBeVisible();
-});
-
-test("Save stays disabled for a name that differs only by spaces", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  const save = page.getByRole("button", { name: "Save defaults" });
-  await field(page, "Model").fill("  claude-saved-model ");
-  await expect(save).toBeDisabled();
-  await field(page, "Model").fill("claude-saved-model2");
-  await expect(save).toBeEnabled();
-  await field(page, "Model").fill("");
-  await expect(save).toBeDisabled(); // a change, but nothing to save
-});
-
-const banner = (page: Page) => page.getByRole("region", { name: "Finish setup to start transcribing" });
-const bannerItems = (page: Page) => banner(page).getByRole("listitem");
-const readyLine = (page: Page) => page.getByRole("status").filter({ hasText: "Ready to transcribe" });
-const CHOOSE = "?view=settings&tab=transcription#transcription-defaults";
-const SIGN_IN = "Sign in or add a key";
-
-test("banner: nothing chosen and nobody signed in lists both steps to do, each with a link to where it is done", async ({ page }) => {
-  await mockApi(page, { claude: conn(), codex: conn() }, { defaults: null });
-  await page.goto("/?view=settings");
-  await expect(banner(page).getByRole("heading", { name: "Finish setup to start transcribing", level: 2 })).toBeVisible();
-  await expect(banner(page).getByText("New transcriptions use")).toHaveCount(0);
-  await expect(bannerItems(page)).toHaveCount(2);
-  const [choose, signIn] = [bannerItems(page).nth(0), bannerItems(page).nth(1)];
-  await expect(choose).toContainText("Choose a transcription model: to do");
-  await expect(choose.getByRole("link", { name: "Choose model" })).toHaveAttribute("href", CHOOSE);
-  await expect(signIn).toContainText("Sign in to Claude Code or the Codex CLI, or add an API key: to do");
-  await expect(signIn.getByRole("link", { name: SIGN_IN })).toHaveAttribute("href", "?view=settings&tab=accounts#connections");
-  for (const item of [choose, signIn]) {
-    await expect(item.locator("svg")).toHaveAttribute("aria-hidden", "true");
-    await expect(item.locator("svg.lucide-circle")).toHaveCount(1);
-  }
-  await expect(page.locator("section#transcription-defaults")).toHaveCount(1);
-  await expect(page.locator("section#connections")).toHaveCount(1);
-  await expect(page.locator("section#api-keys")).toHaveCount(1);
-  await expect(page.getByText("Ready to transcribe")).toHaveCount(0);
-});
-
-test("banner: its links open the tab and section they name", async ({ page }) => {
-  await mockApi(page, { claude: conn(), codex: conn() }, { defaults: null });
-  await page.goto("/?view=settings");
-  await field(page, "Model").fill("typed-model"); // unsaved: a link must not reload the page
-  await bannerItems(page).nth(1).getByRole("link", { name: SIGN_IN }).click();
-  await expect(page).toHaveURL(/\/\?view=settings&tab=accounts#connections$/);
-  await expect(tab(page, "Accounts and API keys")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("section#connections")).toBeVisible();
-  await expect(page.locator("section#connections")).toBeInViewport();
-  await expect(banner(page)).toBeVisible(); // the banner is above the tabs, whichever is open
-
-  await bannerItems(page).nth(0).getByRole("link", { name: "Choose model" }).click();
-  await expect(page).toHaveURL(/\/\?view=settings&tab=transcription#transcription-defaults$/);
-  await expect(tab(page, "Transcription")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("section#transcription-defaults")).toBeVisible();
-  await expect(field(page, "Model")).toHaveValue("typed-model");
-});
-
-test("banner: either provider signed in is enough while no model is chosen", async ({ page }) => {
-  await mockApi(page, { claude: conn(), codex: ready({ method: "chatgpt" }) }, { defaults: null });
-  await page.goto("/?view=settings");
-  await expect(banner(page)).toBeVisible();
-  await expect(bannerItems(page).nth(0)).toContainText("Choose a transcription model: to do");
-  await expect(bannerItems(page).nth(1)).toContainText("Sign in to Claude Code or the Codex CLI, or add an API key: done");
-  await expect(bannerItems(page).nth(1).getByRole("link")).toHaveCount(0);
-  await expect(bannerItems(page).nth(1).locator("svg.lucide-circle-check")).toHaveAttribute("aria-hidden", "true");
-});
-
-test("banner: a chosen model whose provider isn't signed in links to Accounts", async ({ page }) => {
-  await mockApi(page, { claude: conn(), codex: ready({ method: "chatgpt" }) }); // saved: claude
-  await page.goto("/?view=settings");
-  await expect(banner(page)).toBeVisible();
-  await expect(bannerItems(page).nth(0)).toContainText("Choose a transcription model: done");
-  await expect(bannerItems(page).nth(0).getByRole("link")).toHaveCount(0);
-  await expect(bannerItems(page).nth(1)).toContainText("Sign in to Claude Code, or give it a key: to do");
-  await expect(bannerItems(page).nth(1).getByRole("link", { name: SIGN_IN })).toHaveAttribute("href", "?view=settings&tab=accounts#connections");
-  await expect(banner(page).getByText("New transcriptions use")).toHaveCount(0);
-});
-
-test("banner: a chosen provider that isn't installed counts as not signed in", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn({ installed: false }) }, { defaults: { provider: "codex", model: "gpt-app-model", effort: "medium" } });
-  await page.goto("/?view=settings");
-  await expect(banner(page)).toBeVisible();
-  await expect(bannerItems(page).nth(0)).toContainText("Choose a transcription model: done");
-  await expect(bannerItems(page).nth(1)).toContainText("Sign in to Codex CLI, or give it a key: to do");
-  await expect(bannerItems(page).nth(1).getByRole("link", { name: SIGN_IN })).toHaveAttribute("href", "?view=settings&tab=accounts#connections");
-});
-
-test("banner: a chosen API provider links to API keys, and its saved key makes it ready", async ({ page }) => {
-  const calls = await mockApi(page, { claude: conn(), codex: conn() }, { defaults: { provider: "openai", model: "gpt-x", effort: "medium" } });
-  await page.goto("/?view=settings");
-  await expect(bannerItems(page).nth(1)).toContainText("Sign in to OpenAI API, or give it a key: to do");
-  await expect(bannerItems(page).nth(1).getByRole("link", { name: SIGN_IN })).toHaveAttribute("href", "?view=settings&tab=accounts#api-keys");
-
-  calls.apiKeys.push({ provider: "openai", label: "OpenAI API", keysUrl: "https://platform.openai.com/api-keys", needsKey: true, saved: true, fromEnvironment: false });
-  await page.reload();
-  await expect(readyLine(page)).toHaveText("Ready to transcribe · gpt-x · medium on OpenAI API");
-  await expect(banner(page)).toHaveCount(0);
-});
-
-test("banner: all done is one status line with the model, effort and provider, and no banner", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() });
-  await page.goto("/?view=settings");
-  await expect(readyLine(page)).toHaveText("Ready to transcribe · claude-saved-model · high on Claude Code");
-  await expect(readyLine(page).getByText("Ready to transcribe", { exact: true })).toHaveClass(/font-medium/);
-  await expect(readyLine(page).locator("svg.lucide-circle-check")).toHaveAttribute("aria-hidden", "true");
-  await expect(banner(page)).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Finish setup to start transcribing" })).toHaveCount(0);
-  await expect(page.getByText(": to do")).toHaveCount(0);
-  const line = (await readyLine(page).boundingBox())!;
-  const h1 = (await page.getByRole("heading", { name: "Settings", level: 1 }).boundingBox())!;
-  const tabs = (await page.getByRole("tablist", { name: "Settings" }).boundingBox())!;
-  expect(line.y).toBeGreaterThan(h1.y);
-  expect(line.y + line.height).toBeLessThan(tabs.y);
-});
-
-test("banner: updates after saving a choice, without reloading", async ({ page }) => {
-  const calls = await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
-  await page.goto("/?view=settings");
-  await expect(banner(page)).toBeVisible();
-  const loaded = calls.get;
-
-  await field(page, "Provider").selectOption("claude");
-  await field(page, "Model").fill("sonnet");
-  await field(page, "Effort").fill("low");
-  await expect(banner(page)).toBeVisible(); // unsaved edits change nothing
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(readyLine(page)).toHaveText("Ready to transcribe · sonnet · low on Claude Code");
-  await expect(banner(page)).toHaveCount(0);
-
-  await field(page, "Provider").selectOption("codex");
-  await field(page, "Model").fill("gpt-app-model");
-  await field(page, "Effort").fill("medium");
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(banner(page)).toBeVisible();
-  await expect(bannerItems(page).nth(1)).toContainText("Sign in to Codex CLI, or give it a key: to do");
-  await expect(bannerItems(page).nth(1).getByRole("link", { name: SIGN_IN })).toHaveAttribute("href", "?view=settings&tab=accounts#connections");
-  expect(calls.get).toBe(loaded);
-});
-
-test("banner: updates when a sign-in finishes", async ({ page }) => {
-  await page.clock.install();
-  const state: State = { claude: conn(), codex: conn() };
-  await mockApi(page, state);
-  await page.goto(ACCOUNTS);
-  await expect(banner(page)).toBeVisible();
-  await claude(page).getByRole("button", { name: "Open Claude Code sign-in" }).click();
-  await expect(claude(page).getByText("Finish signing in in the browser window that opened.")).toBeVisible();
-  state.claude = ready({ login: { running: false, exitCode: 0 } });
-  await page.clock.runFor(2000);
-  await expect(readyLine(page)).toContainText("Ready to transcribe");
-  await expect(banner(page)).toHaveCount(0);
-});
-
-test("settings run the banner, the tabs, then each tab's sections in order, with no footer", async ({ page }) => {
-  await mockApi(page, { claude: conn(), codex: conn() }, { defaults: null }); // the banner is showing
-  await page.goto("/?view=settings");
-  const top = (locator: ReturnType<Page["locator"]>) => locator.evaluate((el) => el.getBoundingClientRect().top);
-  const tablist = page.getByRole("tablist", { name: "Settings" });
-  const h1Top = await top(page.getByRole("heading", { name: "Settings", level: 1 }));
-  const bannerTop = await top(banner(page));
-  const tabsTop = await top(tablist);
-  expect(h1Top).toBeLessThan(bannerTop);
-  expect(bannerTop).toBeLessThan(tabsTop);
-  const sections: [string, string[]][] = [["Transcription", ["transcription-defaults", "page-sorting"]],
-    ["Accounts and API keys", ["connections", "api-keys"]], ["About", ["updates", "folders", "help"]]];
-  for (const [name, ids] of sections) {
-    await tab(page, name).click();
-    await expect.poll(() => panel(page, name).locator(":scope > section").evaluateAll((all) => all.map((el) => el.id))).toEqual(ids);
-    let before = tabsTop;
-    for (const id of ids) {
-      const now = await top(page.locator(`section#${id}`));
-      expect(now).toBeGreaterThan(before);
-      before = now;
-    }
-  }
-  await expect(page.locator("footer")).toHaveCount(0);
-});
-
-test("the model row leaves no empty line under it until there is a message", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() }, { transcriptionOptions: OPTIONS, defaults: { ...SAVED, model: "opus" } });
-  await page.goto("/?view=settings");
-  const status = defaultsCard(page).locator("[role=status]");
-  const save = page.getByRole("button", { name: "Save defaults" });
-  await expect(status).toHaveText("");
-  await expect(status).toHaveClass(/sr-only/);
-  const gap = async () => {
-    const card = (await defaultsCard(page).boundingBox())!;
-    const button = (await save.boundingBox())!;
-    return card.y + card.height - (button.y + button.height);
-  };
-  const empty = await gap();
-  expect(empty).toBeLessThan(30); // the card's own padding, no reserved line
-  await field(page, "Effort").selectOption("low");
-  await save.click();
-  await expect(status).toHaveText("Saved ✓");
-  await expect(status).not.toHaveClass(/sr-only/);
-  expect(await gap()).toBeGreaterThan(empty + 15);
-  await field(page, "Effort").selectOption("high");
-  await expect(status).toHaveText("");
-  await expect(status).toHaveClass(/sr-only/);
-  expect(await gap()).toBe(empty);
-});
-
-test("on a phone the ready line and the cards stack, and no tab scrolls sideways", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: ready({ method: "chatgpt" }) });
-  await page.setViewportSize({ width: 375, height: 800 });
-  await page.goto(ACCOUNTS);
-  await expect(readyLine(page)).toBeVisible();
-  const [a, b] = [(await claude(page).boundingBox())!, (await codex(page).boundingBox())!];
-  expect(b.y).toBeGreaterThan(a.y + a.height - 1);
-  await expect(page.locator("section#folders code")).toHaveCount(2); // the About tab's paths and version are loaded before its width is measured
-  await expect(page.locator("section#updates [role=status]").first()).toHaveText(/^Up to date/);
-  for (const name of TABS) {
-    await tab(page, name).click();
-    await expect(panel(page, name)).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  }
-});
-
-test("the ready line's status element is on the page before the line appears, and stays the same element", async ({ page }) => {
-  await mockApi(page, { claude: ready(), codex: conn() }, { defaults: null });
-  await page.goto("/?view=settings");
-  await expect(banner(page)).toBeVisible();
-  const live = page.getByRole("heading", { name: "Settings", level: 1 }).locator("xpath=../following-sibling::*[@role='status']");
-  await expect(live).toHaveCount(1);
-  await expect(live).toHaveText("");
-  await expect(live).toHaveClass(/sr-only/);
-  const node = await live.elementHandle();
-  await field(page, "Provider").selectOption("claude");
-  await field(page, "Model").fill("sonnet");
-  await field(page, "Effort").fill("low");
-  await page.getByRole("button", { name: "Save defaults" }).click();
-  await expect(live).toHaveText("Ready to transcribe · sonnet · low on Claude Code");
-  await expect(live).not.toHaveClass(/sr-only/);
-  expect(await node!.evaluate((el) => el.isConnected)).toBe(true);
-});
-
-
-const sortingCard = (page: Page) => page.locator("section#page-sorting");
-const NO_BUILD = "PyTorch has no build for this computer (an Intel Mac).";
-const INSTALL_NOTE = "Downloads PyTorch, about 2 GB. Pages are sorted by the reading model meanwhile.";
-
-test("the reading model sorts pages unless this computer is chosen, which is checked and shows its own settings", async ({ page }) => {
-  const sorting = await mockSorting(page);
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  await expect(card.getByRole("radio", { name: /^By the reading model/ })).toBeChecked();
-  await expect(card.getByLabel("Model that sorts")).toHaveValue("");
-  await expect(card.getByLabel("When it isn't sure")).toHaveCount(0);
-  expect(sorting.checks).toBe(0);
-
-  await card.getByRole("radio", { name: /^On this computer/ }).check();
-  await expect(card.getByText("Ready", { exact: true })).toBeVisible();
-  await expect(card).toContainText("Checked: a test page sorted in 2.5 s.");
-  expect(sorting.saved).toEqual([{ method: "local" }]);
-  expect(sorting.checks).toBe(1);
-  await expect(card.getByLabel("Model that sorts")).toHaveCount(0);
-
-  await card.getByLabel("When it isn't sure").selectOption("Ask the reading model");
-  await expect.poll(() => sorting.saved).toEqual([{ method: "local" }, { unsure: "model" }]);
-  await expect(card.getByLabel("Model that sorts")).toBeVisible(); // the unsure pages go to it
-});
-
-test("a cheaper reading model can sort, at the lowest effort, or the transcription model again", async ({ page }) => {
-  const sorting = await mockSorting(page, { transcriptionOptions: OPTIONS });
-  await page.goto("/?view=settings");
-  const chooser = sortingCard(page).getByLabel("Model that sorts");
-  await chooser.selectOption({ label: "sonnet (latest)" });
-  await expect.poll(() => sorting.saved).toEqual([{ sorter: { provider: "claude", model: "sonnet", effort: "low" } }]);
-  await chooser.selectOption({ label: "GPT B" }); // offers only high
-  await expect.poll(() => sorting.saved.at(-1)).toEqual({ sorter: { provider: "codex", model: "gpt-b", effort: "high" } });
-  await chooser.selectOption("Same as the transcription model");
-  await expect.poll(() => sorting.saved.at(-1)).toEqual({ sameAsTranscription: true });
-  await expect(chooser).toHaveValue("");
-});
-
-test("without PyTorch, this computer can't be chosen until it's installed, and isn't checked meanwhile", async ({ page }) => {
-  const sorting = await mockSorting(page, { localSorting: false });
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  await expect(card.getByRole("radio", { name: /^By the reading model/ })).toBeChecked();
-  await expect(card.getByRole("radio", { name: /^On this computer/ })).toBeDisabled();
-  await expect(card.getByText("Not installed", { exact: true })).toBeVisible();
-  await expect(card).toContainText(INSTALL_NOTE);
-  await expect(card.getByRole("button", { name: "Install PyTorch" })).toBeVisible();
-  expect(sorting.checks).toBe(0);
-  expect(sorting.installs).toBe(0);
-});
-
-test("installing PyTorch shows progress, then checks page sorting so it ends at Ready", async ({ page }) => {
-  const sorting = await mockSorting(page, { localSorting: false });
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  await card.getByRole("button", { name: "Install PyTorch" }).click();
-  await expect(card.getByText("Installing…", { exact: true })).toBeVisible();
-  await expect(card.getByRole("status").filter({ hasText: "Installing PyTorch" })).toBeVisible();
-  await expect(card.getByRole("button", { name: "Install PyTorch" })).toHaveCount(0);
-  await expect(card.getByText("Ready", { exact: true })).toBeVisible({ timeout: 15_000 });
-  await expect(card).toContainText("Checked: a test page sorted in 2.5 s.");
-  await expect(card.getByRole("radio", { name: /^On this computer/ })).toBeEnabled();
-  expect(sorting.installs).toBe(1);
-  expect(sorting.checks).toBe(1);
-});
-
-test("a failed install shows why and can be tried again", async ({ page }) => {
-  const sorting = await mockSorting(page, { localSorting: false, sortingInstall: { result: { ok: false, detail: "No space left on device" } } });
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  await card.getByRole("button", { name: "Install PyTorch" }).click();
-  await expect(card).toContainText("No space left on device", { timeout: 15_000 });
-  await expect(card.getByText("Not installed", { exact: true })).toBeVisible();
-  await card.getByRole("button", { name: "Try again" }).click();
-  await expect.poll(() => sorting.installs).toBe(2);
-  await expect(card.getByRole("button", { name: "Try again" })).toBeVisible({ timeout: 15_000 });
-  expect(sorting.checks).toBe(0);
-});
-
-test("a computer PyTorch can't be installed on says why and offers no install", async ({ page }) => {
-  const sorting = await mockSorting(page, { localSorting: false, sortingInstall: { installable: false, detail: NO_BUILD } });
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  await expect(card.getByRole("radio", { name: /^On this computer/ })).toBeDisabled();
-  await expect(card.getByText("Can't run here")).toBeVisible();
-  await expect(card).toContainText(NO_BUILD);
-  await expect(card.getByRole("button", { name: "Install PyTorch" })).toHaveCount(0);
-  await expect(card.getByRole("button", { name: "Try again" })).toHaveCount(0);
-  expect(sorting.checks).toBe(0);
-});
-
-test("a failing check can be tried again, or the reading model chosen instead", async ({ page }) => {
-  const sorting = await mockSorting(page, { sorting: "local", sortingCheck: { ok: false, detail: "Page sorting on this computer failed: boom" } });
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  await expect(card.getByText("Not working")).toBeVisible();
-  await expect(card).toContainText("Page sorting on this computer failed: boom");
-  const checks = sorting.checks; // one on loading (two in development, where effects run twice)
-  await card.getByRole("button", { name: "Try again" }).click();
-  await expect.poll(() => sorting.checks).toBe(checks + 1);
-  await card.getByRole("button", { name: "Use the reading model instead" }).click();
-  await expect(card.getByRole("radio", { name: /^By the reading model/ })).toBeChecked();
-  expect(sorting.saved).toEqual([{ method: "model" }]);
-});
-
-test("this computer's sorting can use a retrained version that passed its check, and be retrained", async ({ page }) => {
-  const sorting = await mockSorting(page, { sorting: "local", sortingModels: [
-    { id: 4, passed: false, active: false, createdAt: "2026-10-02T00:00:00Z", pages: 130 },
-    { id: 3, passed: true, active: false, createdAt: "2026-10-01T00:00:00Z", pages: 120 },
-  ] });
-  await page.goto("/?view=settings");
-  const card = sortingCard(page);
-  const version = card.getByLabel("Trained version");
-  await expect(version.locator("option")).toHaveCount(2); // the failed one isn't offered
-  await version.selectOption({ index: 1 });
-  await expect.poll(() => sorting.active).toEqual([{ modelId: 3, reviewerId: 1 }]);
-  await card.getByRole("button", { name: "Retrain on reviewed pages" }).click();
-  await expect(card).toContainText("Waiting for the worker");
-  expect(sorting.retrains).toEqual([{ reviewerId: 1 }]);
 });

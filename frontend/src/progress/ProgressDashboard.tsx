@@ -32,7 +32,7 @@ import {
   type ProgressPage,
   type PageStatus,
 } from "./progressData";
-import { ARCHIVE, backendRequest, itemParam, itemTitle, jobStages, providerNames, recordNumber, recordWords, seriesParam, type AvailableBundle } from "./backend";
+import { ARCHIVE, backendRequest, hasKey, itemParam, itemTitle, jobStages, providerNames, recordNumber, recordWords, seriesParam, SIGN_IN, type ApiKey, type AvailableBundle } from "./backend";
 import { useTasks } from "./tasks";
 import TranscriptionDialog, { type ModelChoice } from "./TranscriptionDialog";
 import type { ModelData } from "./ModelControls";
@@ -144,13 +144,15 @@ export default function ProgressDashboard() {
       if (Date.now() - lastCheck.current < 30_000) return;
       lastCheck.current = Date.now();
       try {
-        const [models, connections] = await Promise.all([
+        const [models, connections, keys] = await Promise.all([
           backendRequest<ModelData>("/transcription-models"),
           backendRequest<Record<string, { signedIn: boolean }>>("/connections"),
+          backendRequest<ApiKey[]>("/api-keys").catch(() => []), // without them, only the programs' sign-in counts
         ]);
         setSetup({
           configured: models.configured,
-          signedIn: Object.fromEntries(Object.entries(connections).map(([id, c]) => [id, Boolean(c?.signedIn)])),
+          signedIn: Object.fromEntries([...Object.entries(connections).map(([id, c]) => [id, Boolean(c?.signedIn)]),
+            ...keys.map((k) => [k.provider, hasKey(k)])]),
         });
       } catch {
         setSetup(null);
@@ -451,7 +453,7 @@ export default function ProgressDashboard() {
           <Alert role="status">
             <AlertDescription className="flex flex-wrap items-center gap-x-3 text-foreground">
               {setup.configured
-                ? `${providerNames[setup.configured.provider] ?? setup.configured.provider} isn't signed in, so transcription won't work yet.`
+                ? `${providerNames[setup.configured.provider] ?? setup.configured.provider} ${SIGN_IN.includes(setup.configured.provider) ? "isn't signed in" : "has no key"}, so transcription won't work yet.`
                 : "Transcription isn't set up yet. Choose a model in Settings to start transcribing."}
               <Button asChild variant="link" size="sm" className="h-auto p-0"><a href="/?view=settings">Open Settings</a></Button>
             </AlertDescription>
@@ -923,7 +925,6 @@ export default function ProgressDashboard() {
       {transcribing && (
         <TranscriptionDialog
           source={transcribing}
-          seriesId={collectionId}
           busy={starting !== null}
           error={jobError}
           onClose={() => {

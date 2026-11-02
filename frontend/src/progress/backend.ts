@@ -17,6 +17,26 @@ export const providerNames: Record<string, string> = {
   claude: "Claude Code", codex: "Codex CLI", anthropic: "Claude API", openai: "OpenAI API", gemini: "Gemini API", openrouter: "OpenRouter",
   ollama: "Ollama (this computer)",
 };
+// Who pays for each provider's pages, in a few words.
+export const providerBlurbs: Record<string, string> = {
+  claude: "Your Claude Pro or Max plan", codex: "Your ChatGPT plan", anthropic: "Your own Claude API key", gemini: "Your own Gemini API key",
+  openai: "Your own OpenAI API key", openrouter: "One key for many companies' models", ollama: "Free, on this computer",
+};
+// The providers used through a program signed in on this computer; the others take an API key (Ollama: nothing) and have one effort, "default".
+export const SIGN_IN = ["claude", "codex"];
+
+// A provider's models, as GET /transcription-options lists them (no list without a sign-in or key; error: the list couldn't be read).
+export type ModelOption = { value: string; label: string; group: "used" | "latest" | "listed"; efforts: string[] | null; defaultEffort: string | null };
+export type ProviderOptions = { available: boolean; models: ModelOption[]; efforts: string[]; error: string | null };
+export const modelsOf = (o: ProviderOptions | undefined) => (o && !o.error && o.models.length > 0 ? o.models : null);
+
+// An API provider's key, as GET /api-keys lists it (the key itself is never sent back).
+export type ApiKey = { provider: string; label: string; keysUrl: string; needsKey: boolean; saved: boolean; fromEnvironment: boolean };
+export const hasKey = (k: ApiKey) => !k.needsKey || k.saved || k.fromEnvironment; // Ollama needs none
+export function keyStatus(k: ApiKey) {
+  return !k.needsKey ? "No key: install Ollama, then download a model that reads images, like llama3.2-vision."
+    : k.saved ? "Key saved" : k.fromEnvironment ? "Key from this computer's settings" : "No key";
+}
 // The archive's website; a series' page is /nodes/view/<its number>, and an item's /nodes/view/<its name>.
 export const ARCHIVE = "https://archives.library.unimelb.edu.au";
 // The series and the item a page's address names (/?series=<id>&item=<name>), or an older link's ?collection= and ?bundle=.
