@@ -13,11 +13,14 @@ type Mock = {
   codex?: boolean;
   models?: number; // failing status of GET /transcription-models
   connections?: number; // failing status of GET /connections
+  keys?: Record<string, boolean>; // GET /api-keys: provider -> a key is saved
+  keysStatus?: number; // failing status of GET /api-keys
+  environment?: string[]; // providers whose key comes from the computer's settings
   growing?: boolean; // the items come with one more page on every call, so a finished refresh shows in the stats
 };
 
 async function mock(page: Page, options: Mock = {}) {
-  const calls = { models: 0, connections: 0, progress: 0 };
+  const calls = { models: 0, connections: 0, keys: 0, progress: 0 };
   await page.route("**/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     const served = serveItems(() => {
@@ -37,12 +40,20 @@ async function mock(page: Page, options: Mock = {}) {
       if (options.connections) return route.fulfill({ status: options.connections, json: { detail: "failed" } });
       return route.fulfill({ json: { claude: connection(options.claude ?? true), codex: connection(options.codex ?? false) } });
     }
+    if (path === "/api/api-keys") {
+      calls.keys++;
+      if (options.keysStatus) return route.fulfill({ status: options.keysStatus, json: { detail: "failed" } });
+      return route.fulfill({ json: ["gemini", "anthropic", "openai", "openrouter"].map((provider) => ({
+        provider, label: provider, keysUrl: "https://example.com/keys", needsKey: true,
+        saved: options.keys?.[provider] ?? false, fromEnvironment: options.environment?.includes(provider) ?? false }))
+        .concat([{ provider: "ollama", label: "Ollama", keysUrl: "https://ollama.com/download", needsKey: false, saved: false, fromEnvironment: false }]) });
+    }
     return route.fulfill({ status: 404, json: { detail: `Unexpected test request: ${path}` } });
   });
   return calls;
 }
 
-const banner = (page: Page) => page.getByRole("status").filter({ hasText: /isn't set up yet|isn't signed in/ });
+const banner = (page: Page) => page.getByRole("status").filter({ hasText: /isn't set up yet|isn't signed in|has no key/ });
 const stat = (page: Page) => page.getByTestId("stat-total-pages");
 const NOT_SET_UP = "Transcription isn't set up yet. Choose a model in Settings to start transcribing.";
 
@@ -66,6 +77,34 @@ for (const [view, url] of [["all-items", "/?series=1"], ["item page", "/?series=
 
 test("the banner names Claude Code when it is the chosen provider", async ({ page }) => {
   await mock(page, { claude: false, codex: true });
+  await page.goto("/?series=1");
+  await expect(banner(page)).toContainText("Claude Code isn't signed in, so transcription won't work yet.");
+});
+
+test("an API provider without a key shows the banner, and one with a key saved or set on the computer doesn't", async ({ page }) => {
+  const openai = { ...choice, provider: "openai", model: "gpt-x", effort: "default" };
+  await mock(page, { configured: openai });
+  await page.goto("/?series=1");
+  await expect(banner(page)).toHaveText("OpenAI API has no key, so transcription won't work yet.Open Settings");
+
+  for (const options of [{ keys: { openai: true } }, { environment: ["openai"] }]) {
+    const calls = await mock(page, { configured: openai, ...options });
+    await page.goto("/?series=1");
+    await expect(stat(page)).toHaveText("1");
+    await expect.poll(() => calls.keys).toBe(1);
+    await expect(banner(page)).toHaveCount(0);
+  }
+});
+
+test("Ollama needs no key, so there is no banner for it", async ({ page }) => {
+  await mock(page, { configured: { provider: "ollama", model: "llama3.2-vision", effort: "default" } });
+  await page.goto("/?series=1");
+  await expect(stat(page)).toHaveText("1");
+  await expect(banner(page)).toHaveCount(0);
+});
+
+test("the banner still shows for a program that isn't signed in when the keys can't be loaded", async ({ page }) => {
+  await mock(page, { claude: false, keysStatus: 500 });
   await page.goto("/?series=1");
   await expect(banner(page)).toContainText("Claude Code isn't signed in, so transcription won't work yet.");
 });
@@ -108,7 +147,7 @@ test("setup is requested once on load, not on the progress poll, and on focus at
   const calls = await mock(page, { configured: null, growing: true });
   await page.goto("/?series=1");
   await expect(banner(page)).toBeVisible();
-  expect(calls).toMatchObject({ models: 1, connections: 1 });
+  expect(calls).toMatchObject({ models: 1, connections: 1, keys: 1 });
 
   // A poll is skipped while the previous refresh is still loading, so wait for each refresh to show before the next tick.
   await expect.poll(async () => (await stat(page).textContent()) === String(calls.progress)).toBe(true);
@@ -119,7 +158,7 @@ test("setup is requested once on load, not on the progress poll, and on focus at
   }
   await page.evaluate(() => window.dispatchEvent(new Event("focus"))); // within 30 s of the first check
   await Promise.all([page.waitForRequest("**/api/sync"), page.evaluate(() => fetch("/api/sync").catch(() => {}))]);
-  expect(calls).toMatchObject({ models: 1, connections: 1 });
+  expect(calls).toMatchObject({ models: 1, connections: 1, keys: 1 });
 
   await page.clock.runFor(30000);
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
