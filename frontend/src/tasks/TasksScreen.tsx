@@ -14,7 +14,9 @@ const statusWords = { waiting: "Waiting", running: "Running", done: "Done", fail
 const opens = { items: "Open the series", bundle: "Open the item", page: "Open the page", train: "", check: "Open the series" } as const;
 const when = (time: string | null) => (time ? new Date(time).toLocaleString() : "");
 // What the worker calls each step, in words.
-const stepWords: Record<string, string> = { ...jobStages, adding: "Adding items", train: "Training page sorting", check: "Checking pages" };
+const stepWords: Record<string, string> = {
+  ...jobStages, adding: "Adding items", added: "Counting what was added", train: "Training page sorting", check: "Checking pages",
+};
 const lower = (words: string) => words.charAt(0).toLowerCase() + words.slice(1); // "Transcribing PDF pages": "transcribing PDF pages"
 
 function StatusBadge({ task }: { task: Task }) {
@@ -25,9 +27,11 @@ function StatusBadge({ task }: { task: Task }) {
   );
 }
 
-// How far a task has got, in words: "12,400 of 60,772 read", "Transcribing pages · 40 of 227 pages", "Waiting to start".
+// How far a task has got, in words: "12,400 of 60,772 read", "Transcribing pages · 40 of 227 pages", "Waiting to start"; an items
+// task once finished, how many it added of those it read ("0 of 45 added").
 function progressWords(task: Task) {
-  const count = task.total > 0 ? `${task.done.toLocaleString()} of ${task.total.toLocaleString()} ${task.unit === "items" ? "read" : task.unit}` : "";
+  const words = task.unit !== "items" ? task.unit : task.step === "added" ? "added" : "read";
+  const count = task.total > 0 ? `${task.done.toLocaleString()} of ${task.total.toLocaleString()} ${words}` : "";
   if (!isActive(task)) return count || "—";
   if (task.status === "waiting") return "Waiting to start";
   const stage = task.kind === "bundle" && task.step ? stepWords[task.step] ?? task.step : "";
@@ -102,11 +106,21 @@ export default function TasksScreen() {
 }
 
 // A task as its page has it (GET /jobs/<id>/log): its log, oldest first; the items its latest count says it has added and skipped;
-// an items task's series' items now; and whether a worker is running (null: unknown, no worker has run since it could tell).
+// an items task's series' items now, and how many of its archive items other series have (an item can only be in one); and
+// whether a worker is running (null: unknown, no worker has run since it could tell).
 type TaskLog = Task & {
   startedAt: string | null; log: { time: string; text: string }[]; added: number | null; skipped: number | null;
-  seriesItems: number | null; workerRunning: boolean | null;
+  seriesItems: number | null; elsewhere: { series: string; items: number }[] | null; workerRunning: boolean | null;
 };
+
+// Why an items task skipped what it did: the other series that have its items already, when they account for the skipped ones (an
+// item can only be in one series), and the rest not scanned or Reading Room only; else every reason.
+function skippedNote(task: TaskLog) {
+  const taken = task.elsewhere?.reduce((n, e) => n + e.items, 0) ?? 0;
+  if (!taken || task.skipped === null || task.skipped < taken) return "Listed already, Reading Room only or not scanned";
+  const where = task.elsewhere!.map((e) => `${e.items.toLocaleString()} already in ${e.series}`).join(", ");
+  return `${where} (an item can only be in one series)${task.skipped > taken ? "; the rest Reading Room only or not scanned" : ""}`;
+}
 
 // A span of seconds, roughly: "1 h 45 min", "4 min", "under a minute".
 function duration(seconds: number) {
@@ -212,7 +226,7 @@ export function TaskScreen({ id }: { id: string }) {
           <CardHeader>
             <CardTitle className="flex flex-wrap items-baseline justify-between gap-3 text-xl font-semibold tracking-tight">
               <span>{progressWords(task)}</span>
-              {task.total > 0 && <span className="text-muted-foreground">{Math.floor((task.done / task.total) * 100)}%</span>}
+              {task.total > 0 && task.step !== "added" && <span className="text-muted-foreground">{Math.floor((task.done / task.total) * 100)}%</span>}
             </CardTitle>
             {facts && <CardDescription>{facts}</CardDescription>}
           </CardHeader>
@@ -220,7 +234,7 @@ export function TaskScreen({ id }: { id: string }) {
         {(task.added !== null || task.seriesItems !== null) && (
           <div className="grid grid-cols-3 gap-2 sm:gap-4">
             {task.added !== null && <Stat label="Added" value={task.added.toLocaleString()} />}
-            {task.skipped !== null && <Stat label="Skipped" value={task.skipped.toLocaleString()} note="Listed already, Reading Room only or not scanned" />}
+            {task.skipped !== null && <Stat label="Skipped" value={task.skipped.toLocaleString()} note={skippedNote(task)} />}
             {task.seriesItems !== null && <Stat label="In the series now" value={task.seriesItems.toLocaleString()} />}
           </div>
         )}

@@ -37,9 +37,10 @@ def test_a_series_items_are_listed_from_the_archive_saying_which_have_scans_and_
     db.commit()
     listing = client.get("/collections/2/archive-items", params={"page": 2, "search": " diary "}).json()
     assert listing == {"items": [
-        {"node": 637675, "title": "Diary 1878-1883", "identifier": "UMA-IT-000147343", "scanned": True, "added": True},
-        {"node": 637676, "title": "Diary 1884 & 1885", "identifier": "UMA-IT-000147344", "scanned": False, "added": False},
-        {"node": 637678, "title": "Diary 1886", "identifier": "UMA-IT-000147346", "scanned": False, "added": False}],  # Reading Room
+        {"node": 637675, "title": "Diary 1878-1883", "identifier": "UMA-IT-000147343", "scanned": True, "added": True, "series": None},
+        {"node": 637676, "title": "Diary 1884 & 1885", "identifier": "UMA-IT-000147344", "scanned": False, "added": False, "series": None},
+        {"node": 637678, "title": "Diary 1886", "identifier": "UMA-IT-000147346", "scanned": False, "added": False,
+         "series": None}],  # Reading Room
         "page": 2, "pages": 2, "total": 30}
     [browse] = [r for r in diaries.requests if r.startswith("/nodes/browse?")]
     assert "bid=524173" in browse and "page=2" in browse and "keywords=diary" in browse and "order=asc" in browse
@@ -113,7 +114,7 @@ def test_adding_a_series_whole_list_is_queued_and_the_worker_adds_each_downloada
     assert worker.work_once(db)
     db.expire_all()
     job = db.get(models.Job, queued.json()["id"])
-    assert (job.status, job.done_pages, job.total_pages) == ("done", 6, 30)  # both pages of 3 gone through, of the 30 listed
+    assert (job.status, job.done_pages, job.total_pages) == ("done", 0, 6)  # none added, of the 6 read (both pages of 3)
     assert db.query(models.ArchiveItem).filter_by(collection_id=2).count() == 0  # listed, no scans, Reading Room only
     browses = [r for r in diaries.requests if r.startswith("/nodes/browse?")]
     assert len(browses) == 2 and all("keywords=diary" in r for r in browses)
@@ -152,12 +153,12 @@ def test_a_list_too_long_for_the_archive_to_show_is_added_a_box_at_a_time_and_lo
     db.expire_all()
     assert {i.node for i in db.query(models.ArchiveItem).filter_by(collection_id=3)} == {368478, 380835}
     job = db.query(models.Job).one()
-    assert (job.status, job.done_pages, job.total_pages) == ("done", 3, 60772)
+    assert (job.status, job.done_pages, job.total_pages) == ("done", 1, 3)  # 1 added, of the 3 read
     assert len([r for r in archive.requests if r.startswith("/nodes/browse?bid=71317&")]) == 1  # not its 417 pages
     n = job.job_id
     assert [r.getMessage() for r in caplog.records][1:] == [
         f"job {n} step: adding", f"job {n}: box 1 of 2: 1 read, 1 added", f"job {n}: box 2 of 2: 3 read, 1 added",  # Davis, V was added by hand
-        f"job {n}: 3 read, 1 added, 2 skipped (listed already, Reading Room only or not scanned)", f"job {n} done"]
+        f"job {n}: 3 read, 1 added, 2 skipped (listed already, Reading Room only or not scanned)", f"job {n} step: added", f"job {n} done"]
 
 
 def test_adding_a_list_from_an_archive_that_cant_be_reached_fails_the_task_with_the_reason(client, db, monkeypatch):
@@ -223,6 +224,83 @@ def test_a_task_comes_with_its_log_oldest_first_when_it_started_what_it_has_adde
     assert client.get("/jobs/91/log").json()["workerRunning"] is True
     os.utime(beat, (beat.stat().st_atime - 60, beat.stat().st_mtime - 60))  # a minute without a beat
     assert client.get("/jobs/91/log").json()["workerRunning"] is False
+
+
+def _item(node, collection_id):
+    return models.ArchiveItem(node=node, collection_id=collection_id, identifier=f"UMA-IT-{node}", title=f"Item {node}")
+
+
+@pytest.fixture
+def sharing(db, diaries):
+    """Series 2 (Diaries) and, on the same archive series, 3 (Beta, 2 items) and 4 (Alpha, 1); 5 is on another archive series."""
+    db.add_all([models.Collection(collection_id=3, name="Beta", archive_series=524173),
+                models.Collection(collection_id=4, name="Alpha", archive_series=524173),
+                models.Collection(collection_id=5, name="Elsewhere", archive_series=7)])
+    db.flush()
+    db.add_all([_item(637675, 3), _item(1, 3), _item(2, 4), _item(637676, 2), _item(3, 5), _item(4, 1)])
+    db.commit()
+    return diaries
+
+
+def test_a_listed_item_names_the_other_series_that_lists_it_and_none_for_its_own_or_unlisted_items(client, sharing):
+    items = {i["node"]: (i["added"], i["series"]) for i in client.get("/collections/2/archive-items").json()["items"]}
+    assert items == {637675: (True, "Beta"), 637676: (True, None), 637678: (False, None)}
+    items = {i["node"]: (i["added"], i["series"]) for i in client.get("/collections/3/archive-items").json()["items"]}
+    assert items == {637675: (True, None), 637676: (True, "Diaries"), 637678: (False, None)}
+
+
+def test_the_items_other_series_on_the_same_archive_series_list_are_counted_by_series_name(client, sharing):
+    assert client.get("/collections/2/items-elsewhere").json() == [{"series": "Alpha", "items": 1}, {"series": "Beta", "items": 2}]
+    assert client.get("/collections/4/items-elsewhere").json() == [{"series": "Beta", "items": 2}, {"series": "Diaries", "items": 1}]
+    assert client.get("/collections/5/items-elsewhere").json() == []  # nothing else is on its archive series
+
+
+def test_items_elsewhere_needs_a_series_linked_to_the_archive(client, db):
+    db.add(models.Collection(collection_id=2, name="Ships"))
+    db.commit()
+    assert client.get("/collections/99/items-elsewhere").status_code == 404
+    assert client.get("/collections/2/items-elsewhere").status_code == 400
+
+
+def test_a_finished_add_items_job_reports_how_many_it_added_of_those_it_read(db, diaries, monkeypatch):
+    monkeypatch.setattr(worker, "PAUSE", 0)
+    db.add(_item(637675, 1))  # listed already in another series
+    job = models.Job(kind="items", collection_id=2)
+    db.add(job)
+    db.commit()
+    steps = []
+
+    def progress(step, done, total):
+        steps.append((step, done, total))
+        job.step = step
+        if total:
+            job.done_pages, job.total_pages = done, total
+
+    worker.add_items(db, job, progress)
+    assert steps[-1] == ("added", 0, 6)  # 6 read: one listed elsewhere, one with no scans, one Reading Room only
+    assert (job.step, job.done_pages, job.total_pages) == ("added", 0, 6)
+
+
+def test_a_finished_add_items_task_still_says_its_step_is_added(client, db, diaries, monkeypatch):
+    monkeypatch.setattr(worker, "PAUSE", 0)
+    db.add(_item(637675, 1))
+    db.commit()
+    client.post("/collections/2/items/all", json={})
+    assert worker.work_once(db)
+    [task] = client.get("/jobs").json()
+    assert (task["status"], task["step"], task["done"], task["total"]) == ("done", "added", 0, 6)
+
+
+def test_an_items_task_log_says_which_other_series_have_its_archive_items(client, db, sharing, tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "settings", lambda: {"OUTPUT": str(tmp_path)})
+    db.add_all([models.Job(job_id=7, kind="items", collection_id=2, status="done"), models.Job(job_id=8, kind="train", status="done"),
+                models.Job(job_id=9, kind="items", collection_id=1, status="done")])
+    db.commit()
+    assert client.get("/jobs/7/log").json()["elsewhere"] == [{"series": "Alpha", "items": 1}, {"series": "Beta", "items": 2}]
+    assert client.get("/jobs/8/log").json()["elsewhere"] is None
+    db.get(models.Collection, 2).archive_series = None
+    db.commit()
+    assert client.get("/jobs/7/log").json()["elsewhere"] is None
 
 
 def test_a_run_saves_the_series_it_is_loaded_into(tmp_path):
