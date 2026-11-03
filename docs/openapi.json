@@ -2957,6 +2957,88 @@
         }
       }
     },
+    "/collections/{collection_id}/page-sorting": {
+      "get": {
+        "summary": "Get Series Sorting",
+        "operationId": "get_series_sorting_collections__collection_id__page_sorting_get",
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Series Sorting",
+        "operationId": "put_series_sorting_collections__collection_id__page_sorting_put",
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeriesSortingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api-keys": {
       "get": {
         "summary": "Get Api Keys",
@@ -3851,6 +3933,25 @@
           "revisions"
         ],
         "title": "SaveReviewsRequest"
+      },
+      "SeriesSortingRequest": {
+        "properties": {
+          "sorter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Sorter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "sorter"
+        ],
+        "title": "SeriesSortingRequest"
       },
       "Sorter": {
         "properties": {
