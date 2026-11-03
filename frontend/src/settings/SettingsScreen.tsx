@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { backendRequest, hasKey, keyStatus, modelsOf, type ApiKey, type ProviderOptions } from "../progress/backend";
+import { backendRequest, keyStatus, modelsOf, readyOf, type ApiKey, type ProviderOptions } from "../progress/backend";
 import { KeyForm } from "./ApiKeys";
 import About from "./About";
 import TranscriptionDefaults from "./TranscriptionDefaults";
@@ -145,10 +145,7 @@ export default function SettingsScreen() {
     backendRequest<Record<string, ProviderOptions>>("/transcription-options").then(setOptions).catch(() => setOptions(null));
   }, [keysVersion, programs]);
 
-  // Whether each provider is connected (undefined: not known yet): signed in, a key, or for Ollama, models listed.
-  const ready: Record<string, boolean | undefined> = { claude: data?.claude.signedIn, codex: data?.codex.signedIn,
-    ...Object.fromEntries((apiKeys ?? []).filter((k) => k.needsKey).map((k) => [k.provider, hasKey(k)])),
-    ollama: options === undefined ? undefined : Boolean(modelsOf(options?.ollama)) };
+  const ready = readyOf(data, apiKeys, options);
 
   // A signed-in program's install, sign-in, test and sign-out.
   function programBody(p: (typeof providers)[number], c: Connection) {

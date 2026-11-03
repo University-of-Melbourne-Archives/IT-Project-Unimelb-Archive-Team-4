@@ -157,8 +157,10 @@ def run_bundle(db, job, progress):
     labels = {t.name: t.label for t in db.query(models.PageType).filter_by(collection_id=series, unknown=False)}
     types = set(labels)
     #pages sorted on this computer, or by the reading model (the Settings page), which may call a page blank whatever the series
+    #a series' own sorting model (its Setup) wins over Settings
     sorting_settings = app_settings.sorting_settings(db)
-    sorting = sorting_settings["method"]
+    own_sorter = app_settings.series_sorter(db, series)
+    sorting = "model" if own_sorter else sorting_settings["method"]
     unsure_to_model = sorting_settings["unsure"] == "model"
     active = None
     if sorting == "local":
@@ -173,7 +175,7 @@ def run_bundle(db, job, progress):
         raise SystemExit("this series has no prompt: add one in its Setup first")
     run = pipeline.Run(pdf, out, progress=progress, texts=texts,
                        sorting_model=ROOT / active.path if active else None, grouping=grouping.rule(db, series),
-                       collection=series, sorting=sorting, page_type_labels=labels, sorter=sorting_settings["sorter"],
+                       collection=series, sorting=sorting, page_type_labels=labels, sorter=own_sorter or sorting_settings["sorter"],
                        unsure_to_model=unsure_to_model,
                        page_types=types | ({"blank"} if sorting == "model" or unsure_to_model or types & set(LABELS) else set()))
     run.transcription_config = {field.upper(): value for field, value in transcription_choice(db, job).items()}

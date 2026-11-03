@@ -1897,6 +1897,26 @@ def put_page_sorting(payload: PageSortingRequest, db: Session = Depends(get_db))
                                        sorter=None if payload.sameAsTranscription else payload.sorter.model_dump() if payload.sorter else False)
     return get_page_sorting(db)
 
+class SeriesSortingRequest(BaseModel):
+    sorter: Sorter | None  #null: the series' pages are sorted as Settings says again
+
+#the reading model that sorts a series' pages into its page types, if the series has its own (null: as Settings says)
+@app.get("/collections/{collection_id}/page-sorting")
+def get_series_sorting(collection_id: int, db: Session = Depends(get_db)):
+    if not db.get(models.Collection, collection_id):
+        raise HTTPException(status_code=404, detail="No such series.")
+    return {"sorter": app_settings.series_sorter(db, collection_id)}
+
+@app.put("/collections/{collection_id}/page-sorting")
+def put_series_sorting(collection_id: int, payload: SeriesSortingRequest, db: Session = Depends(get_db)):
+    if not db.get(models.Collection, collection_id):
+        raise HTTPException(status_code=404, detail="No such series.")
+    if payload.sorter:
+        check_transcription(payload.sorter.provider, payload.sorter.model, payload.sorter.effort)
+    write_lock(db)
+    app_settings.save_series_sorter(db, collection_id, payload.sorter.model_dump() if payload.sorter else None)
+    return get_series_sorting(collection_id, db)
+
 
 #--API KEYS--# for transcribing through an AI company's API (backend/pipeline/transcribe/providers.py): kept on this computer,
 #never in the database, and never sent back; each provider says whether it has one, and where to get one

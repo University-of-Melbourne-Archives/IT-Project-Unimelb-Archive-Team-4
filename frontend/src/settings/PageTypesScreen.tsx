@@ -17,6 +17,7 @@ import { isSetUp, type SeriesCounts } from "../progress/setup";
 import ChecksSection from "./ChecksSection";
 import FieldRules from "./FieldRules";
 import { cleanRules, parseTemplate, sameRules, type Rules } from "./rules";
+import SeriesSorting from "./SeriesSorting";
 import SetupGuide from "./SetupGuide";
 import SuggestTypesDialog from "./SuggestTypesDialog";
 import { describe } from "./shapes";
@@ -134,6 +135,7 @@ export default function PageTypesScreen() {
                     ))}
                   </TableBody>
                 </Table>
+                <SeriesSorting collectionId={collectionId} />
               </section>
             )}
           </TabsContent>
