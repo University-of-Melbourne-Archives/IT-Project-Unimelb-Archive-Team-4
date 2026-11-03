@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import { Box, File, Layers, Plus, WandSparkles } from "lucide-react";
 
+import { cn } from "cn";
+
 import AppHeader from "@/components/AppHeader";
-import SeriesHeader from "@/components/SeriesHeader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { navigate } from "../navigate";
 import { me } from "../person";
 import { backendRequest, seriesParam } from "../progress/backend";
 import { isSetUp, type SeriesCounts } from "../progress/setup";
@@ -18,7 +19,8 @@ import ChecksSection from "./ChecksSection";
 import FieldRules from "./FieldRules";
 import { cleanRules, parseTemplate, sameRules, type Rules } from "./rules";
 import SeriesSorting from "./SeriesSorting";
-import SetupGuide from "./SetupGuide";
+import SetupOverview from "./SetupOverview";
+import SetupQuestions from "./SetupQuestions";
 import SuggestTypesDialog from "./SuggestTypesDialog";
 import { describe } from "./shapes";
 
@@ -38,23 +40,21 @@ type Version = { id: number; number: number; body: string; rules: Rules; reviewe
 const json = (method: string, body: unknown) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const message = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback);
 const start = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
-const SECTIONS = ["levels", "page-types", "checks"];
+// The parts of a series' setup, as its side menu names them, by their ?section= in the URL; the setup wizard (wizard) has none.
+const SECTIONS = [["overview", "Overview"], ["levels", "Structure"], ["page-types", "Kinds of page"], ["checks", "Checks"],
+  ["sorting", "Sorting"]] as const;
 
-// A series' Setup tab, in three: its levels of record, its page types (what each is called, the template its pages are read
-// with and its fields' rules), and its checks across fields. The one shown is in the URL (?section=; the old ?view=page-types
-// opens the page types). Opened without one while the series isn't set up, it shows setting it up on a sample instead.
+// A series' setup, its own screen apart from the day-to-day Items and Accuracy, its parts one at a time from a side menu: an
+// overview (how an item it has read came out; until it's set up, the setup wizard instead), its structure (its levels of record),
+// its kinds of page (what each is called, the template its pages are read with and its fields' rules), its checks across fields
+// and the model that sorts its pages. The one shown is in the URL (?view=setup&section=, the overview without one; wizard: the
+// setup wizard again; the old ?view=page-types opens the kinds of page).
 export default function PageTypesScreen() {
   const params = new URLSearchParams(location.search);
   const collectionId = Number(seriesParam(params)) || 1;
-  const [section, setSection] = useState(() => SECTIONS.find((s) => s === params.get("section"))
-    ?? (params.get("view") === "page-types" ? "page-types" : "levels"));
-  const [chosen] = useState(() => params.has("section") || params.get("view") === "page-types");
-  function show(next: string) {
-    const url = new URL(location.href);
-    url.searchParams.set("section", next);
-    history.replaceState(null, "", url);
-    setSection(next);
-  }
+  const section = params.get("section") === "wizard" ? "wizard"
+    : SECTIONS.find(([key]) => key === params.get("section"))?.[0] ?? (params.get("view") === "page-types" ? "page-types" : "overview");
+  const home = (key: string) => key === section || (key === "overview" && section === "wizard");
   const [types, setTypes] = useState<PageType[] | null>(null);
   const [collection, setCollection] = useState<(Collection & SeriesCounts) | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -78,13 +78,21 @@ export default function PageTypesScreen() {
     window.addEventListener("pageshow", restored);
     return () => window.removeEventListener("pageshow", restored);
   }, [load]);
+  // Asked again every few seconds while one of its items is being read: the setup wizard moves on once it has been.
+  useEffect(() => {
+    if (!collection?.running) return;
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
+  }, [collection?.running, load]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <AppHeader series={{ id: collectionId, name: collection?.name ?? "" }} />
-      <main className="space-y-8 p-6">
-        <SeriesHeader series={{ id: collectionId, name: collection?.name ?? "", archiveIdentifier: collection?.archiveIdentifier,
-          archiveSeries: collection?.archiveSeries }} tab="setup" />
+      <AppHeader series={{ id: collectionId, name: collection?.name ?? "" }} crumbs={[{ label: "Setup" }]} />
+      <main className="space-y-6 p-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Setup</h1>
+          <p className="text-sm text-muted-foreground">How this series' pages are read and checked.</p>
+        </div>
         {loadError && (
           <Alert variant="destructive">
             <AlertDescription className="flex flex-wrap items-center gap-2">
@@ -92,22 +100,29 @@ export default function PageTypesScreen() {
             </AlertDescription>
           </Alert>
         )}
-        {collection && !chosen && !isSetUp(collection) ? <SetupGuide collectionId={collectionId} /> : (
-        <Tabs value={section} onValueChange={show} className="gap-6">
-          <TabsList aria-label="Setup">
-            <TabsTrigger value="levels">Levels</TabsTrigger>
-            <TabsTrigger value="page-types">Page types</TabsTrigger>
-            <TabsTrigger value="checks">Checks</TabsTrigger>
-          </TabsList>
-          <TabsContent value="levels">
-            {collection && types && <Levels collection={collection} types={types} />}
-          </TabsContent>
-          <TabsContent value="page-types">
-            {types && (
+          <div className="grid gap-8 lg:grid-cols-[12rem_minmax(0,1fr)]">
+            <nav aria-label="Setup" className="flex flex-wrap gap-1 lg:flex-col">
+              {SECTIONS.map(([key, label]) => (
+                <a key={key} href={`/?series=${collectionId}&view=setup&section=${key}`} onClick={navigate}
+                  aria-current={home(key) ? "page" : undefined}
+                  className={cn("rounded-md px-3 py-2 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                    home(key) ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground")}>
+                  {key === "overview" && collection && !isSetUp(collection) ? "Set up" : label}
+                </a>
+              ))}
+            </nav>
+            <div className="min-w-0">
+          {section === "wizard" || (section === "overview" && collection && !isSetUp(collection))
+            ? collection && types && <SetupQuestions collectionId={collectionId} collection={collection} types={types} onChanged={load} />
+          : section === "overview" ? collection && types && <SetupOverview collectionId={collectionId} collection={collection} types={types} />
+          : section === "levels" ? collection && types && <Levels collection={collection} types={types} />
+          : section === "checks" ? types && <ChecksSection collectionId={collectionId} types={types} />
+          : section === "sorting" ? <SeriesSorting collectionId={collectionId} /> : (
+            types && (
               <section className="space-y-3">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div>
-                    <h2 className="text-xl font-semibold tracking-tight">Page types</h2>
+                    <h2 className="text-xl font-semibold tracking-tight">Kinds of page</h2>
                     <p className="text-sm text-muted-foreground">A page is read with its type's template; a type with no template isn't read.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -135,15 +150,11 @@ export default function PageTypesScreen() {
                     ))}
                   </TableBody>
                 </Table>
-                <SeriesSorting collectionId={collectionId} />
               </section>
-            )}
-          </TabsContent>
-          <TabsContent value="checks">
-            {types && <ChecksSection collectionId={collectionId} types={types} />}
-          </TabsContent>
-        </Tabs>
-        )}
+            )
+          )}
+            </div>
+          </div>
       </main>
       {suggesting && types && (
         <SuggestTypesDialog collectionId={collectionId} existing={types.filter((t) => !t.unknown).map((t) => t.label)}
@@ -185,7 +196,7 @@ function Levels({ collection, types }: { collection: Collection; types: PageType
   return (
     <section className="space-y-3">
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">Levels</h2>
+        <h2 className="text-xl font-semibold tracking-tight">Structure</h2>
         <p className="text-sm text-muted-foreground">
           How an item's pages group into records for review, each level inside the one above. Changes apply to items read from now on.
         </p>

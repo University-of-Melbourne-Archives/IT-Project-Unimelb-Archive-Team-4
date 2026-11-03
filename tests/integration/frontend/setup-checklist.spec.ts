@@ -26,82 +26,59 @@ async function mock(page: Page) {
   return state;
 }
 
-const card = (page: Page) => page.getByRole("region", { name: /Set up this series to start reading it|Series set up/ });
+const bar = (page: Page) => page.getByRole("region", { name: /This series isn't set up yet|Reading a sample item|Almost set up/ });
+const card = (page: Page) => page.getByRole("region", { name: "Series set up" });
 const steps = (page: Page) => card(page).getByRole("list", { name: "Setup steps" }).getByRole("listitem");
 const next = (page: Page) => card(page).locator('li[aria-current="step"]'); // the step to do now
+const wizard = (page: Page) => bar(page).getByRole("link", { name: "Run the setup wizard" });
 
-test("a new series' Items page lists the steps of setting it up, each ticked from what it has, with where to do it", async ({ page }) => {
+test("a new series' Items page says it isn't set up, with the setup wizard to run, and what is left as it gets set up", async ({ page }) => {
   const state = await mock(page);
   await page.goto("/?series=2");
-  await expect(card(page).getByRole("heading")).toHaveText("Set up this series to start reading it");
-  await expect(card(page)).toContainText("0 of 3 steps done");
-  await expect(card(page).getByRole("progressbar")).toHaveCount(0);
-  await expect(card(page).getByRole("link", { name: "Open setup" })).toHaveAttribute("href", "/?series=2&view=setup");
-  await expect(steps(page).locator("p.font-medium")).toHaveText([
-    "Add its page types: to do", "Give each page type a template: to do", "Read one item as a sample: to do", /^Say what a record is: to do\s*Optional$/]);
-  await expect(steps(page).nth(0).getByRole("link", { name: "Add page types" })).toHaveAttribute("href", "/?series=2&view=setup&section=page-types");
-  await expect(steps(page).nth(2)).toContainText("Press Transcribe on one of its items below.");
-  await expect(steps(page).nth(3).getByRole("link", { name: "Set levels" })).toHaveAttribute("href", "/?series=2&view=setup&section=levels");
+  await expect(bar(page)).toHaveText(/This series isn't set up yet/);
+  await expect(wizard(page)).toHaveAttribute("href", "/?series=2&view=setup");
+  await expect(card(page)).toHaveCount(0);
 
-  // two page types, one with a template; an item read with all its pages waiting as Unknown isn't a sample yet
-  Object.assign(state, { types: [UNKNOWN, LETTER, ENVELOPE], read: [{ id: "L1", name: "L1" }] });
-  Object.assign(state.series, { pageTypes: 2, templates: 1, pages: 3, unknownPages: 3, bundles: 1, running: 1 });
+  // page types added, one without a template: still the wizard
+  Object.assign(state, { types: [UNKNOWN, LETTER, ENVELOPE] });
+  Object.assign(state.series, { pageTypes: 2, templates: 1 });
   await page.reload();
-  await expect(card(page)).toContainText("1 of 3 steps done");
-  await expect(steps(page).nth(0)).toContainText("Letter and Envelope");
-  await expect(steps(page).nth(0).getByRole("link")).toHaveCount(0);
-  await expect(steps(page).nth(1)).toContainText("Envelope has none yet.");
-  await expect(steps(page).nth(1).getByRole("link", { name: "Write templates" })).toHaveAttribute("href", "/?series=2&view=setup&section=page-types");
-  await expect(steps(page).nth(2)).toContainText("Reading…"); // another item is being read
+  await expect(bar(page)).toHaveText(/This series isn't set up yet/);
+  await expect(wizard(page)).toBeVisible();
+
+  // every template written, nothing read yet
+  Object.assign(state, { types: [UNKNOWN, LETTER, { ...ENVELOPE, templateVersion: 4 }] });
+  Object.assign(state.series, { templates: 2 });
+  await page.reload();
+  await expect(bar(page)).toHaveText("Almost set up: press Transcribe on one of its items below");
+  await expect(wizard(page)).toHaveCount(0);
+
+  // an item read with all its pages waiting as Unknown isn't a sample yet, and another item is being read
+  Object.assign(state, { read: [{ id: "L1", name: "L1" }] });
+  Object.assign(state.series, { pages: 3, unknownPages: 3, bundles: 1, running: 1 });
+  await page.reload();
+  await expect(bar(page)).toHaveText("Reading a sample item…");
+  await expect(wizard(page)).toHaveCount(0);
 
   // set up: the sample read, until another item is read
-  Object.assign(state, { types: [UNKNOWN, LETTER, { ...ENVELOPE, templateVersion: 4 }] });
-  Object.assign(state.series, { templates: 2, pages: 4, unknownPages: 1, running: 0 });
+  Object.assign(state.series, { pages: 4, unknownPages: 1, running: 0 });
   await page.reload();
   await expect(card(page).getByRole("heading")).toHaveText("Series set up");
-  await expect(card(page).getByRole("link", { name: "Open setup" })).toHaveCount(0);
+  await expect(bar(page)).toHaveCount(0);
   await expect(card(page)).toContainText("Check the sample came out right, then read the other items.");
   await expect(steps(page).nth(2).getByRole("link", { name: "Check it" })).toHaveAttribute("href", "/?series=2&item=L1");
   Object.assign(state.series, { bundles: 2 });
   await page.reload();
   await expect(page.getByRole("heading", { name: "All items" })).toBeVisible();
   await expect(card(page)).toHaveCount(0);
+  await expect(bar(page)).toHaveCount(0);
 });
 
-test("the step to do next is marked, with the main button, and moves on as steps get done", async ({ page }) => {
-  const state = await mock(page);
-  const main = (step: number) => steps(page).nth(step).getByRole("link");
+test("the setup wizard button opens the series' Setup", async ({ page }) => {
+  await mock(page);
   await page.goto("/?series=2");
-  await expect(next(page)).toHaveCount(1);
-  await expect(next(page)).toContainText("Add its page types");
-  await expect(main(0)).toHaveAttribute("data-variant", "default");
-  await expect(main(3)).toHaveAttribute("data-variant", "outline"); // the optional step is never the one to do
-  await expect(card(page).getByRole("link", { name: "Open setup" })).toHaveAttribute("data-variant", "outline");
-
-  // page types added, one without a template: templates are next
-  Object.assign(state, { types: [UNKNOWN, LETTER, ENVELOPE] });
-  Object.assign(state.series, { pageTypes: 2, templates: 1 });
-  await page.reload();
-  await expect(card(page)).toContainText("1 of 3 steps done");
-  await expect(next(page)).toHaveCount(1);
-  await expect(next(page)).toContainText("Give each page type a template");
-  await expect(main(1)).toHaveAttribute("data-variant", "default");
-
-  // every template written: an item to read is next
-  Object.assign(state, { types: [UNKNOWN, LETTER, { ...ENVELOPE, templateVersion: 4 }] });
-  Object.assign(state.series, { templates: 2 });
-  await page.reload();
-  await expect(card(page)).toContainText("2 of 3 steps done");
-  await expect(next(page)).toHaveCount(1);
-  await expect(next(page)).toContainText("Read one item as a sample");
-
-  // while it is read, no step is the one to do
-  Object.assign(state, { read: [{ id: "L1", name: "L1" }] });
-  Object.assign(state.series, { pages: 3, unknownPages: 3, bundles: 1, running: 1 });
-  await page.reload();
-  await expect(steps(page).nth(2)).toContainText("Reading…");
-  await expect(next(page)).toHaveCount(0);
-  await expect(card(page).getByRole("link", { name: "Open setup" })).toBeVisible();
+  await wizard(page).click();
+  await expect(page).toHaveURL(/\?series=2&view=setup$/);
 });
 
 test("a series set up says so and marks no step to do", async ({ page }) => {
@@ -116,11 +93,12 @@ test("a series set up says so and marks no step to do", async ({ page }) => {
   await expect(next(page)).toHaveCount(0);
   await expect(card(page).getByRole("progressbar")).toHaveCount(0);
   await expect(steps(page).nth(2).getByRole("link", { name: "Check it" })).toHaveAttribute("data-variant", "outline");
+  await expect(card(page).getByRole("link", { name: "Set levels" })).toHaveAttribute("href", "/?series=2&view=setup&section=levels");
 });
 
 test("an older link, with ?collection=, still opens the series", async ({ page }) => {
   await mock(page);
   await page.goto("/?collection=2");
-  await expect(card(page).getByRole("heading")).toHaveText("Set up this series to start reading it");
-  await expect(card(page).getByRole("link", { name: "Open setup" })).toHaveAttribute("href", "/?series=2&view=setup");
+  await expect(bar(page)).toHaveText(/This series isn't set up yet/);
+  await expect(wizard(page)).toHaveAttribute("href", "/?series=2&view=setup");
 });

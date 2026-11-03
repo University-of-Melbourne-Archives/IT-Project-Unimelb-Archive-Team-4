@@ -48,6 +48,12 @@ export function readyOf(connections: Record<string, { signedIn: boolean }> | nul
 }
 // The archive's website; a series' page is /nodes/view/<its number>, and an item's /nodes/view/<its name>.
 export const ARCHIVE = "https://archives.library.unimelb.edu.au";
+// A series' name, or as last seen while its screen's data is still on the way ("" if never seen).
+const seriesNames = new Map<number, string>();
+export function seriesName(id: number, name: string | undefined) {
+  if (name) seriesNames.set(id, name);
+  return name || seriesNames.get(id) || "";
+}
 // The series and the item a page's address names (/?series=<id>&item=<name>), or an older link's ?collection= and ?bundle=.
 export const seriesParam = (params: URLSearchParams) => params.get("series") ?? params.get("collection");
 export const itemParam = (params: URLSearchParams) => params.get("item") ?? params.get("bundle");

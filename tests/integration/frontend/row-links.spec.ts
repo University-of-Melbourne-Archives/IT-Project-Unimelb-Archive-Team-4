@@ -47,11 +47,16 @@ test.describe("series table", () => {
   }
 
   test("a click on the arrow cell or the link text opens that row's series", async ({ page }) => {
-    await rows(page).nth(1).getByRole("cell").last().click();
+    await rows(page).nth(1).getByRole("cell").last().locator("svg").last().click();
     await expect(page).toHaveURL("/?series=2");
     await page.goBack();
-    await rows(page).nth(0).getByRole("link", { name: "Series 1" }).click();
+    await rows(page).nth(0).getByRole("link", { name: "Series 1", exact: true }).click();
     await expect(page).toHaveURL("/?series=1");
+  });
+
+  test("the Setup button in a row opens that series' setup and not its items", async ({ page }) => {
+    await rows(page).nth(1).getByRole("link", { name: "Setup of Series 2" }).click();
+    await expect(page).toHaveURL("/?series=2&view=setup");
   });
 
   test("the archive link in a row opens the archive and not the series", async ({ page }) => {

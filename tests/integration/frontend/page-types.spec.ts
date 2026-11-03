@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// A series' Setup tab (/?view=setup; /?view=page-types, its old name, still opens it) on an intercepted API: nothing reaches the real backend.
+// A series' Setup screen (/?view=setup, its sections by ?section=; /?view=page-types, its old name, opens the page types) on an intercepted API: nothing reaches the real backend.
 type PageType = { name: string; label: string; builtIn: boolean; unknown: boolean; templateVersion: number | null };
 type Part = { type: string; count: string; how: string };
 type Level = { name: string; parts: Part[]; key: string | null };
@@ -214,17 +214,19 @@ const addPart = async (page: Page, label: string) => {
 
 test("a series' levels are a ladder from Item to Page, and its page types are listed by label with their template", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/?series=1&view=setup");
-  await expect(page.getByRole("heading", { name: "Wilfred Prest Survey", level: 1 })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Series" }).getByRole("link", { name: "Setup" })).toHaveAttribute("aria-current", "page");
+  await page.goto("/?series=1&view=setup&section=levels");
+  await expect(page.getByRole("heading", { name: "Setup", level: 1 })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Series: Wilfred Prest Survey" })).toBeVisible();
   await expect(ladder(page)).toHaveText([/^Item\s*From the archive$/, /^Survey\s*Starts at each Main page · Coded page matched by number\s*Edit$/,
     /^Page\s*From the scan$/]);
-  await expect(page.getByRole("tablist", { name: "Setup" }).getByRole("tab")).toHaveText(["Levels", "Page types", "Checks"]);
-  await expect(page.getByRole("tab", { name: "Levels" })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("tab", { name: "Page types" }).click();
+  const menu = page.getByRole("navigation", { name: "Setup" });
+  await expect(menu.getByRole("link")).toHaveText(["Overview", "Structure", "Kinds of page", "Checks", "Sorting"]);
+  await expect(menu.getByRole("link", { name: "Structure" })).toHaveAttribute("aria-current", "page");
+  await menu.getByRole("link", { name: "Kinds of page" }).click();
   await expect(page).toHaveURL("/?series=1&view=setup&section=page-types");
-  await page.reload(); // the tab shown is kept
-  await expect(page.getByRole("heading", { name: "Page types", level: 2 })).toBeVisible();
+  await expect(menu.getByRole("link", { name: "Kinds of page" })).toHaveAttribute("aria-current", "page");
+  await page.reload(); // the section shown is kept
+  await expect(page.getByRole("heading", { name: "Kinds of page", level: 2 })).toBeVisible();
   await expect(row(page, "Main page")).toContainText("Saved");
   await expect(row(page, "Unknown")).toContainText("Not read: pages sorting couldn't place wait here");
   await expect(page.getByRole("columnheader", { name: "Grouping" })).toHaveCount(0);
@@ -276,7 +278,7 @@ test("a new page type is added by label, then opened to give it a template", asy
 
 test("a level opens on its shape, and its name, what one is made of in order (custom) and its number field are saved together, and a refusal is shown", async ({ page }) => {
   const calls = await mockApi(page);
-  await page.goto("/?series=1&view=setup");
+  await page.goto("/?series=1&view=setup&section=levels");
   await page.getByRole("link", { name: "Edit survey" }).click();
   await expect(page).toHaveURL("/?series=1&view=setup&level=1");
   await expect(page.getByRole("heading", { name: "Survey structure", level: 1 })).toBeVisible();
@@ -319,7 +321,7 @@ test("a level opens on its shape, and its name, what one is made of in order (cu
 
 test("a level added goes inside the bottom one, its first page type starting one, and the ladder steps down to it", async ({ page }) => {
   const calls = await mockApi(page);
-  await page.goto("/?series=1&view=setup");
+  await page.goto("/?series=1&view=setup&section=levels");
   await page.getByRole("link", { name: "Add level" }).click();
   await expect(page).toHaveURL("/?series=1&view=setup&level=new");
   await expect(page.getByText("It goes inside each survey. Items read from now on group by it.")).toBeVisible();
@@ -573,12 +575,12 @@ test("a level's settings are tried on an item already read before they're saved,
   await expect(main.getByText("A level's name is a word or two, like survey or letter.")).toHaveCount(0); // tried with another name
 });
 
-// The card at the bottom of Page types: which model sorts this series' pages into its types.
-const sorting = (page: Page) => page.getByRole("region", { name: "Sorting pages into types" });
+// The Sorting section: which model sorts this series' pages into its types.
+const sorting = (page: Page) => page.getByRole("region", { name: "Sorting", exact: true });
 const sortWith = (page: Page) => sorting(page).getByRole("combobox", { name: "Model that sorts this series' pages" });
 const sameRadio = (page: Page) => sorting(page).getByRole("radio", { name: "Same as transcription" });
 const otherRadio = (page: Page) => sorting(page).getByRole("radio", { name: "Another model" });
-const SORT_PAGE = "/?series=1&view=setup&section=page-types";
+const SORT_PAGE = "/?series=1&view=setup&section=sorting";
 
 test("a series sorts its pages with the transcription model unless told otherwise", async ({ page }) => {
   await mockApi(page);

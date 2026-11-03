@@ -64,8 +64,11 @@ export default function SeriesSorting({ collectionId }: { collectionId: number }
   const listing = other || Boolean(sorter);
 
   return (
-    <section aria-labelledby={`sorting-${collectionId}`} className="max-w-2xl space-y-3 pt-6">
-      <h3 id={`sorting-${collectionId}`} className="font-medium">Sorting pages into types</h3>
+    <section aria-labelledby={`sorting-${collectionId}`} className="max-w-2xl space-y-3">
+      <div>
+        <h2 id={`sorting-${collectionId}`} className="text-xl font-semibold tracking-tight">Sorting</h2>
+        <p className="text-sm text-muted-foreground">The model that says what kind each page is, when an item is read.</p>
+      </div>
       <Segmented label="Which model sorts this series' pages" value={listing ? "other" : "same"}
         onChange={(v) => { if (saving) return; setOther(v === "other"); if (v === "same" && sorter) void save(null); }}
         options={[{ value: "same", label: "Same as transcription" }, { value: "other", label: "Another model" }]} />

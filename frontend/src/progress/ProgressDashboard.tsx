@@ -461,12 +461,12 @@ export default function ProgressDashboard() {
         )}
         {addingItems && (
           <Alert role="status">
-            <AlertDescription className="text-foreground">
-              {addingItems.status === "waiting"
-                ? "Waiting to add items from the archive."
-                : addingItems.total > 0
-                  ? `Adding items from the archive: ${addingItems.done.toLocaleString()} of ${addingItems.total.toLocaleString()}.`
-                  : "Adding items from the archive…"}
+            <AlertDescription className="flex items-center gap-2 text-foreground">
+              <Spinner role="presentation" aria-hidden="true" />
+              {addingItems.status === "waiting" ? "Waiting to add items from the archive…"
+                : addingItems.status === "running" && addingItems.total > 0
+                ? `Adding items from the archive: ${addingItems.done.toLocaleString()} of ${addingItems.total.toLocaleString()}…`
+                : "Adding items from the archive…"}
             </AlertDescription>
           </Alert>
         )}
@@ -842,7 +842,11 @@ export default function ProgressDashboard() {
                   {!totalRows && (
                     <TableRow>
                       <TableCell colSpan={columns.length}>
-                        {noItems ? (
+                        {noItems && addingItems ? (
+                          <p className="flex items-center justify-center gap-2 p-6 text-muted-foreground">
+                            <Spinner role="presentation" aria-hidden="true" /> Adding its items from the archive…
+                          </p>
+                        ) : noItems ? (
                           <div className="flex flex-col items-center gap-3 p-6 text-center whitespace-normal">
                             <p className="font-medium">No items yet.</p>
                             {series.archiveSeries !== undefined && (

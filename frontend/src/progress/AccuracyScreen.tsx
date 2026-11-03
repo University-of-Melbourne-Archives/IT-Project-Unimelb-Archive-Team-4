@@ -247,12 +247,12 @@ export default function AccuracyScreen() {
                     left={!t.first ? "—" : versions === null ? <Muted>Not loaded</Muted> : mine ? <VersionButton version={mine} open={open} /> : "Not recorded"}
                     right={types === null || versions === null ? <Muted>Not loaded</Muted>
                       : newest ? <Next changed={!!t.type && templateChanged(t.type)}><VersionButton version={newest} open={open} /></Next> : <Muted>None yet</Muted>}
-                    action={<Button asChild variant="outline" size="sm"><a href={`/?series=${collectionId}&view=setup`}>Edit templates</a></Button>} />
+                    action={<Button asChild variant="outline" size="sm"><a href={`/?series=${collectionId}&view=setup&section=page-types`}>Edit templates</a></Button>} />
                 );
               }) : (
                 <Row label="Templates" left={loading ? <Muted>Loading…</Muted> : "—"}
                   right={waiting ? <Muted>Loading…</Muted> : types === null || versions === null ? <Muted>Not loaded</Muted> : <Muted>None yet</Muted>}
-                  action={<Button asChild variant="outline" size="sm"><a href={`/?series=${collectionId}&view=setup`}>Edit templates</a></Button>} />
+                  action={<Button asChild variant="outline" size="sm"><a href={`/?series=${collectionId}&view=setup&section=page-types`}>Edit templates</a></Button>} />
               )}
               <Row label="Accuracy"
                 left={loading ? <span role="status" className="text-muted-foreground">Loading accuracy…</span>

@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { keepPerson, storedPerson } from "../person";
-import { backendRequest } from "../progress/backend";
+import { backendRequest, seriesName } from "../progress/backend";
 
 type Crumb = { label: string; href?: string; onClick?: (event: MouseEvent<HTMLAnchorElement>) => void };
 type Series = { id: number; name: string };
@@ -120,10 +120,14 @@ function SeriesMenu({ current }: { current: Series }) {
   useEffect(() => {
     backendRequest<Series[]>("/collections?brief=true").then(setAll).catch(() => {});
   }, []);
-  const view = new URLSearchParams(location.search).get("view");
-  const tab = view === "setup" || view === "accuracy" ? `&view=${view}` : "";
+  const params = new URLSearchParams(location.search);
+  const view = params.get("view");
+  // the Setup section shown stays too, but not the setup wizard: the other series may be set up (page-types: the old Setup)
+  const section = view === "page-types" ? "page-types" : params.get("section");
+  const tab = view === "accuracy" ? "&view=accuracy" : view === "setup" || view === "page-types"
+    ? `&view=setup${section && section !== "wizard" ? `&section=${encodeURIComponent(section)}` : ""}` : "";
   const others = all.filter((s) => s.id !== current.id);
-  const name = current.name || "Series";
+  const name = seriesName(current.id, current.name) || "Series";
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>

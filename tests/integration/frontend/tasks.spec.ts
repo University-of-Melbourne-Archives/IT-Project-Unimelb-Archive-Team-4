@@ -271,8 +271,8 @@ test("if the tasks have never loaded the Tasks page says only why", async ({ pag
 const banner = (page: Page) => page.getByRole("status").filter({ hasText: /items from the archive/ });
 
 for (const [state, jobs, text] of [
-  ["waiting", [task({ status: "waiting", step: null, collectionId: 1, href: "/?series=1" })], "Waiting to add items from the archive."],
-  ["running", [task({ done: 12400, total: 60772, collectionId: 1, href: "/?series=1" })], "Adding items from the archive: 12,400 of 60,772."],
+  ["waiting", [task({ status: "waiting", step: null, collectionId: 1, href: "/?series=1" })], "Waiting to add items from the archive…"],
+  ["running", [task({ done: 12400, total: 60772, collectionId: 1, href: "/?series=1" })], "Adding items from the archive: 12,400 of 60,772…"],
   ["starting", [task({ collectionId: 1, href: "/?series=1" })], "Adding items from the archive…"],
 ] as const) {
   test(`the dashboard's banner says when its items are ${state}`, async ({ page }) => {
