@@ -17,7 +17,8 @@ import { refreshTasks } from "./tasks";
 
 const MAX_ADD = 25; // the most one request may add
 const LISTED_MAX = 10_000; // the archive lists no further than this
-type Listed = { node: number; title: string; identifier: string; scanned: boolean; added: boolean };
+// added: a series lists it already; series: which, when that's another series (an item can only be in one).
+type Listed = { node: number; title: string; identifier: string; scanned: boolean; added: boolean; series: string | null };
 type Listing = { items: Listed[]; page: number; pages: number; total: number };
 type Added = { added: { node: number; title: string }[]; refused: { node: number; reason: string }[] };
 
@@ -48,6 +49,15 @@ export default function AddItemsDialog({ collectionId, seriesTitle, archiveItems
   const [problem, setProblem] = useState<{ text: string; refused: { node: number; line: string }[] } | null>(null);
   // What was queued, once adding everything has been.
   const [queued, setQueued] = useState("");
+  // How many of the series' archive items other series have already, by series: those can't be added here.
+  const [elsewhere, setElsewhere] = useState<{ series: string; items: number }[]>([]);
+  useEffect(() => {
+    backendRequest<{ series: string; items: number }[]>(`/collections/${collectionId}/items-elsewhere`).then(setElsewhere).catch(() => {});
+  }, [collectionId]);
+  const taken = elsewhere.reduce((n, e) => n + e.items, 0);
+  const names = elsewhere.map((e) => e.series);
+  const takenBy = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] ?? "";
+  const allTaken = archiveItems !== null && taken > 0 && taken >= archiveItems;
   useEffect(() => {
     if (!request) return;
     let active = true;
@@ -188,6 +198,12 @@ export default function AddItemsDialog({ collectionId, seriesTitle, archiveItems
           <p>
             {archiveItems === null ? "Add every item this series has on the archive." : `${seriesTitle} has ${itemCount(archiveItems)} on the archive.`}
           </p>
+          {taken > 0 && (
+            <p id={`${id}-taken`} role="status">
+              {allTaken ? `All its items are already in ${takenBy}.`
+                : `${taken.toLocaleString()} of its items ${taken === 1 ? "is" : "are"} already in ${takenBy} and ${taken === 1 ? "is" : "are"} skipped.`}
+            </p>
+          )}
           <p className="text-muted-foreground">Items with no scans online are skipped.</p>
           <Button variant="link" className="h-auto w-fit p-0" disabled={busy} onClick={openList}>Choose items instead</Button>
         </div>}
@@ -208,7 +224,7 @@ export default function AddItemsDialog({ collectionId, seriesTitle, archiveItems
             {listing.items.length ? <ul className="max-h-[40dvh] divide-y overflow-y-auto rounded-md border">
               {listing.items.map((item) => {
                 const checked = selected.has(item.node);
-                const note = item.added ? "Added" : !item.scanned ? "No scans online" : "";
+                const note = item.series ? `In ${item.series}` : item.added ? "Added" : !item.scanned ? "No scans online" : "";
                 const detail = `${item.identifier} · ${item.node}${note && ` · ${note}`}`;
                 const disabled = Boolean(note) || locked || (full && !checked);
                 return <li key={item.node}>
@@ -244,7 +260,8 @@ export default function AddItemsDialog({ collectionId, seriesTitle, archiveItems
         </AlertDescription></Alert>}
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={onClose}>Cancel</Button>
-          <Button ref={primary} disabled={locked || count === 0}
+          <Button ref={primary} disabled={locked || count === 0 || (!choosing && allTaken)}
+            aria-describedby={!choosing && taken > 0 ? `${id}-taken` : undefined}
             onClick={() => void (everything ? addAll(request?.search ?? "", count) : add())}>
             {busy ? "Adding…" : primaryLabel(everything, count)}
           </Button>

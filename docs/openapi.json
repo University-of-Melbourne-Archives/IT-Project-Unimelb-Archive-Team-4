@@ -1420,6 +1420,43 @@
         }
       }
     },
+    "/collections/{collection_id}/items-elsewhere": {
+      "get": {
+        "summary": "Get Items Elsewhere",
+        "operationId": "get_items_elsewhere_collections__collection_id__items_elsewhere_get",
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/collections/{collection_id}/items": {
       "post": {
         "summary": "Add Items",

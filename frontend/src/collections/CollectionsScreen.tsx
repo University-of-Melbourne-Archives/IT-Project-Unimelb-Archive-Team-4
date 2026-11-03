@@ -22,7 +22,11 @@ type Collection = {
   archiveItems: number | null; bundles: number; running: number; failed: number; pages: number; reviewable: number; reviewed: number;
   unknownPages: number; flagged: number; pageTypes: number; templates: number;
 };
-type Series = { id: number; title: string; identifier: string; date: string; access: string; items: number | null; url: string };
+// inPrestCribe: the series here that list its items already, with how many each (an item can only be in one series).
+type Series = {
+  id: number; title: string; identifier: string; date: string; access: string; items: number | null; url: string;
+  inPrestCribe?: { series: string; items: number }[];
+};
 type Lookup = { node: number; series?: Series; error?: string };
 
 const json = (method: string, body: unknown) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -196,6 +200,12 @@ function NewCollectionDialog({ onClose, onCreated }: { onClose: () => void; onCr
     return () => { current = false; window.clearTimeout(timer); };
   }, [node]);
   const shown = lookup && lookup.node === node ? lookup : null;
+  // Its items other series here have already: a new series can't add those, and with none left, adding its items adds nothing.
+  const listed = shown?.series?.inPrestCribe ?? [];
+  const taken = listed.reduce((n, s) => n + s.items, 0);
+  const allTaken = taken > 0 && shown?.series?.items != null && taken >= shown.series.items;
+  const names = listed.map((s) => s.series);
+  const holders = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] ?? "";
 
   async function create() {
     setBusy(true);
@@ -211,7 +221,7 @@ function NewCollectionDialog({ onClose, onCreated }: { onClose: () => void; onCr
       setBusy(false);
       return;
     }
-    if (addItems) {
+    if (addItems && !allTaken) {
       try {
         await backendRequest<unknown>(`/collections/${created.id}/items/all`, json("POST", { search: "" }));
       } catch (e) {
@@ -265,6 +275,11 @@ function NewCollectionDialog({ onClose, onCreated }: { onClose: () => void; onCr
                   {[shown.series.identifier, shown.series.date, shown.series.access].filter(Boolean).join(" · ")}
                 </p>
                 {shown.series.items !== null && <p>{shown.series.items.toLocaleString()} items in this series</p>}
+                {taken > 0 && (
+                  <p id={`${id}-taken`} role="status" className="text-amber-700 dark:text-amber-400">
+                    {allTaken ? "All its items" : `${taken.toLocaleString()} of its items`} {taken === 1 && !allTaken ? "is" : "are"} already in {holders}.
+                  </p>
+                )}
                 {!/^UMA-SRE?-/.test(shown.series.identifier) && (
                   <p className="text-destructive">This isn't a series. Open the series it belongs to and paste that address instead.</p>
                 )}
@@ -280,8 +295,8 @@ function NewCollectionDialog({ onClose, onCreated }: { onClose: () => void; onCr
           </Field>
           <Field>
             <label className="flex items-center gap-2 text-sm font-medium">
-              <input type="checkbox" className="size-4 accent-primary" checked={addItems} disabled={busy}
-                onChange={(e) => setAddItems(e.target.checked)} />
+              <input type="checkbox" className="size-4 accent-primary" checked={addItems && !allTaken} disabled={busy || allTaken}
+                aria-describedby={allTaken ? `${id}-taken` : undefined} onChange={(e) => setAddItems(e.target.checked)} />
               Add all its items
             </label>
           </Field>

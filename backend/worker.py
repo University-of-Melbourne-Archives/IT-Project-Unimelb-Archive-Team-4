@@ -87,7 +87,8 @@ def work_once(db):
         log.exception("job %s failed during %s", job.job_id, job.step)
         fail(db, job, str(error) or type(error).__name__)
         return True
-    job.status, job.step = "done", None
+    #finished: no step, but an items job's "added" stays (its count is then of the items it added, not of those it read)
+    job.status, job.step = "done", job.step if job.step == "added" else None
     db.commit()
     log.info("job %s done", job.job_id)
     return True
@@ -146,6 +147,7 @@ def add_items(db, job, progress):
             log.info("job %s: %s%s read, %s added", job.job_id, f"box {box:,} of {len(units):,}: " if units else "", f"{seen:,}", f"{added:,}")
     log.info("job %s: %s read, %s added, %s skipped (listed already, Reading Room only or not scanned)", job.job_id, f"{seen:,}",
              f"{added:,}", f"{seen - added:,}")
+    progress("added", added, seen)  #finished: its count is of those added, out of those read
 
 def run_bundle(db, job, progress):
     pdf = ROOT / job.pdf

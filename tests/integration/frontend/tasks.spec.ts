@@ -134,9 +134,9 @@ test("the Tasks link opens the Tasks page, a table of the active tasks first, th
 });
 
 // A task as GET /api/jobs/<id>/log gives it: the task, when it started, its lines in the worker's log, oldest first, and the rest.
-type Extra = { added: number | null; skipped: number | null; seriesItems: number | null; workerRunning: boolean | null };
+type Extra = { added: number | null; skipped: number | null; seriesItems: number | null; elsewhere: { series: string; items: number }[] | null; workerRunning: boolean | null };
 const logged = (task: Task, startedAt: string | null, log: [string, string][], extra: Partial<Extra> = {}) => ({
-  ...task, startedAt, log: log.map(([time, text]) => ({ time, text })), added: null, skipped: null, seriesItems: null, workerRunning: true,
+  ...task, startedAt, log: log.map(([time, text]) => ({ time, text })), added: null, skipped: null, seriesItems: null, elsewhere: null, workerRunning: true,
   ...extra,
 });
 const stat = (page: Page, label: string) => page.locator('[data-slot="card"]').filter({ hasText: label });
@@ -293,4 +293,62 @@ test("the dashboard's banner is for its own series' adding job only", async ({ p
   await expect(page.getByTestId("stat-total-pages")).toBeVisible();
   await expect(tasksButton(page)).toHaveAccessibleName("Tasks, 3 active");
   await expect(banner(page)).toHaveCount(0);
+});
+
+const NONE_ADDED = task({ id: 41, label: "Adding Estate diaries' items", status: "done", step: "added", done: 0, total: 45, collectionId: 2, series: "Estate diaries" });
+
+test("an items task says how many it added of those it read, once finished", async ({ page }) => {
+  await mock(page, [{ ...ADDING, done: 45, total: 45 }, NONE_ADDED]);
+  await page.goto("/?view=tasks");
+  await expect(row(page, "Adding Missing, Wounded")).toContainText("45 of 45 read");
+  await expect(row(page, "Estate diaries")).toContainText("0 of 45 added");
+  await expect(row(page, "Estate diaries")).not.toContainText("read");
+});
+
+const ELSEWHERE_LOG = (extra: Partial<Extra>) => (route: { fulfill: (r: { json: unknown }) => Promise<void> }) =>
+  route.fulfill({ json: logged(NONE_ADDED, "2026-10-19T03:00:00+00:00", [["2026-10-19T03:00:00+00:00", "started: items"], ["2026-10-19T03:01:00+00:00", "done"]],
+    { added: 0, skipped: 45, seriesItems: 0, workerRunning: false, ...extra }) });
+
+test("a finished items task that added none shows 0 of 45 added without a percentage, and its Skipped note names the other series", async ({ page }) => {
+  await mock(page, []);
+  await page.route("**/api/jobs/41/log", ELSEWHERE_LOG({ elsewhere: [{ series: "Wilfred Prest Survey", items: 45 }] }));
+  await page.goto("/?view=tasks&task=41");
+  await expect(progress(page)).toHaveText("0 of 45 added");
+  await expect(progress(page)).not.toContainText("%");
+  await expect(stat(page, "Skipped")).toContainText("45");
+  await expect(stat(page, "Skipped")).toContainText("45 already in Wilfred Prest Survey (an item can only be in one series)");
+});
+
+test("the Skipped note names each series that has some of the items", async ({ page }) => {
+  await mock(page, []);
+  await page.route("**/api/jobs/41/log", ELSEWHERE_LOG({ skipped: 1210, elsewhere: [{ series: "Alpha", items: 1200 }, { series: "Beta", items: 3 }] }));
+  await page.goto("/?view=tasks&task=41");
+  await expect(stat(page, "Skipped")).toContainText(
+    "1,200 already in Alpha, 3 already in Beta (an item can only be in one series); the rest Reading Room only or not scanned");
+});
+
+test("the Skipped note keeps its usual words when other series hold more items than the task skipped", async ({ page }) => {
+  await mock(page, []);
+  await page.route("**/api/jobs/41/log", ELSEWHERE_LOG({ skipped: 1, elsewhere: [{ series: "Alpha", items: 45 }] }));
+  await page.goto("/?view=tasks&task=41");
+  await expect(stat(page, "Skipped")).toContainText("Listed already, Reading Room only or not scanned");
+  await expect(stat(page, "Skipped")).not.toContainText("Alpha");
+});
+
+for (const elsewhere of [null, []]) {
+  test(`the Skipped note keeps its usual words when elsewhere is ${JSON.stringify(elsewhere)}`, async ({ page }) => {
+    await mock(page, []);
+    await page.route("**/api/jobs/41/log", ELSEWHERE_LOG({ elsewhere }));
+    await page.goto("/?view=tasks&task=41");
+    await expect(stat(page, "Skipped")).toContainText("Listed already, Reading Room only or not scanned");
+    await expect(stat(page, "Skipped")).not.toContainText("an item can only be in one series");
+  });
+}
+
+test("a running items task's page says X of Y read with its percentage", async ({ page }) => {
+  await mock(page, []);
+  await page.route("**/api/jobs/31/log", (route) => route.fulfill({ json: logged(ADDING, "2026-10-19T03:00:00+00:00", [["2026-10-19T03:00:00+00:00", "started: items"]]) }));
+  await page.goto("/?view=tasks&task=31");
+  await expect(progress(page)).toContainText("12,400 of 60,772 read");
+  await expect(progress(page)).toContainText("20%");
 });

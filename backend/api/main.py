@@ -813,18 +813,19 @@ def preview_levels(collection_id: int, payload: LevelsPreview, db: Session = Dep
             "loose": [p["id"] for p in run.pages if p["survey"] is None],
             "pageTypes": {page_id: labels.get(category, category) for page_id, category in categories.items()}, "problems": problems}
 
-#a series on the archive, to check before a collection links to it
+#a series on the archive, to check before a collection links to it, with the series here that list its items already (inPrestCribe)
 @app.get("/archive-series/{node}")
-def get_archive_series(node: int):
+def get_archive_series(node: int, db: Session = Depends(get_db)):
     try:
         series = scans.archive_series(node)
     except scans.ARCHIVE_ERRORS as error:
         raise HTTPException(status_code=502, detail=f"Couldn't reach the archive ({error}).")
     if series is None:
         raise HTTPException(status_code=404, detail="The archive has no page with that number.")
-    return series
+    return {**series, "inPrestCribe": series_items_listed(db, node)}
 
-#a series' items on the archive, a page of 24 at a time, each saying whether it has scans and whether a series lists it already
+#a series' items on the archive, a page of 24 at a time, each saying whether it has scans, whether a series lists it already
+#(added), and, when that's another series, which (series; an item can only be in one)
 @app.get("/collections/{collection_id}/archive-items")
 def list_archive_items(collection_id: int, page: int = 1, search: str = "", db: Session = Depends(get_db)):
     c = linked_collection(db, collection_id)
@@ -832,8 +833,30 @@ def list_archive_items(collection_id: int, page: int = 1, search: str = "", db: 
         listing = scans.archive_listing(scans.listing_link(c.archive_series), max(page, 1), search.strip()[:200])
     except scans.ARCHIVE_ERRORS as error:
         raise HTTPException(status_code=502, detail=f"Couldn't reach the archive ({error}).")
-    added = {node for (node,) in db.query(models.ArchiveItem.node)}
-    return {**listing, "items": [{**item, "added": item["node"] in added} for item in listing["items"]]}
+    owner = dict(db.query(models.ArchiveItem.node, models.ArchiveItem.collection_id)
+                 .filter(models.ArchiveItem.node.in_([item["node"] for item in listing["items"]])))
+    names = dict(db.query(models.Collection.collection_id, models.Collection.name))
+    return {**listing, "items": [{**item, "added": item["node"] in owner,
+                                  "series": names.get(owner[item["node"]]) if owner.get(item["node"], collection_id) != collection_id else None}
+                                 for item in listing["items"]]}
+
+#the series here that list items of a series on the archive, each with how many, by name (an item can only be in one series, so
+#another series linked to it can't add these); besides: one series left out
+def series_items_listed(db, archive_series, besides=None):
+    rows = (db.query(models.Collection.name, func.count(models.ArchiveItem.node))
+            .join(models.ArchiveItem, models.ArchiveItem.collection_id == models.Collection.collection_id)
+            .filter(models.Collection.archive_series == archive_series)
+            .filter(*([models.Collection.collection_id != besides] if besides is not None else []))
+            .group_by(models.Collection.collection_id, models.Collection.name).order_by(models.Collection.name).all())
+    return [{"series": name, "items": count} for name, count in rows]
+
+#how many of a series' archive items other series list already, by series: those linked to the same series on the archive
+def items_elsewhere(db, collection):
+    return series_items_listed(db, collection.archive_series, besides=collection.collection_id)
+
+@app.get("/collections/{collection_id}/items-elsewhere")
+def get_items_elsewhere(collection_id: int, db: Session = Depends(get_db)):
+    return items_elsewhere(db, linked_collection(db, collection_id))
 
 class NewItems(BaseModel):
     nodes: list[int]
@@ -1097,10 +1120,12 @@ def job_log(job_id: int, db: Session = Depends(get_db)):
     counts = next(filter(None, (re.search(r"([\d,]+) read, ([\d,]+) added", entry["text"]) for entry in reversed(log))), None)
     read, added = (int(n.replace(",", "")) for n in counts.groups()) if counts else (None, None)
     names = dict(db.query(models.Collection.collection_id, models.Collection.name))
+    items_series = db.get(models.Collection, job.collection_id) if job.kind == "items" else None
     return {**task_json(db, job, loader.archive_owners(db), names), "log": log,
             "startedAt": log[0]["time"] if started and log else None,
             "added": added, "skipped": read - added if counts else None,
             "seriesItems": db.query(models.ArchiveItem).filter_by(collection_id=job.collection_id).count() if job.kind == "items" else None,
+            "elsewhere": items_elsewhere(db, items_series) if items_series and items_series.archive_series else None,
             "workerRunning": worker_running(output)}
 
 #whether a worker is running, from how lately it touched its heartbeat (worker.beat); None if none has run since it got one

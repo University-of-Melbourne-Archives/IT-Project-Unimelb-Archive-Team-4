@@ -1,9 +1,9 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { serveItems } from "./items-mock";
 
-type Item = { node: number; title: string; identifier: string; scanned: boolean; added: boolean };
+type Item = { node: number; title: string; identifier: string; scanned: boolean; added: boolean; series: string | null };
 const item = (node: number, title: string, extra: Partial<Item> = {}): Item =>
-  ({ node, title, identifier: `UMA-IT-${node}`, scanned: true, added: false, ...extra });
+  ({ node, title, identifier: `UMA-IT-${node}`, scanned: true, added: false, series: null, ...extra });
 const DIARY_A = item(637675, "Strathfieldsaye Estate Diary 1878-1883");
 const DIARY_B = item(637677, "Strathfieldsaye Estate Diary 1884-1890");
 const LEDGER = item(637679, "Strathfieldsaye Estate Ledger", { scanned: false });
@@ -31,6 +31,7 @@ type Mock = {
   gate?: Promise<void>; // POST items/all waits for this before answering
   items?: { status: number; json: unknown }; // POST items answers with this alone
   lateAdded?: number[]; // nodes the list shows as added once an add has been posted
+  elsewhere?: { series: string; items: number }[]; // GET items-elsewhere: how many items other series have
   hold?: (url: URL) => Promise<void> | undefined; // GET archive-items waits for this before answering
 };
 
@@ -94,6 +95,7 @@ async function mock(page: Page, options: Mock = {}) {
       onList.push(DIARY_A, DIARY_B);
       return route.fulfill({ status: 202, json: { id: 31, kind: "items", status: "waiting", step: null, donePages: 0, totalPages: 0, error: null } });
     }
+    if (path === "/api/collections/1/items-elsewhere") return route.fulfill({ json: options.elsewhere ?? [] });
     if (path === "/api/jobs") {
       calls.jobs++;
       return route.fulfill({ json: [] });
@@ -593,3 +595,51 @@ for (const [status, detail] of [
     expect(calls.overviews).toBe(before); // nothing was added, so the dashboard isn't refreshed
   });
 }
+
+const OTHER = "Wilfred Prest Survey";
+const TAKEN = item(637683, "Strathfieldsaye Estate Receipts", { series: OTHER });
+
+test("an item in another series reads In <series> and is disabled, one in this series still reads Added", async ({ page }) => {
+  await mock(page, { listed: () => listing([DIARY_A, TAKEN, LETTERS]) });
+  const d = await openList(page);
+  const taken = d.getByRole("checkbox", { name: TAKEN.title, exact: true });
+  await expect(taken).toHaveAccessibleDescription(`${TAKEN.identifier} · ${TAKEN.node} · In ${OTHER}`);
+  await expect(taken).toBeDisabled();
+  const added = d.getByRole("checkbox", { name: LETTERS.title, exact: true });
+  await expect(added).toHaveAccessibleDescription(`${LETTERS.identifier} · ${LETTERS.node} · Added`);
+  await expect(added).toBeDisabled();
+  await expect(d.getByRole("checkbox", { name: DIARY_A.title, exact: true })).toBeEnabled();
+});
+
+test("when other series already have every archive item, Add all says so and is disabled", async ({ page }) => {
+  await mock(page, { elsewhere: [{ series: OTHER, items: ALL.length }] });
+  await emptyStateButton(page).click();
+  const d = dialog(page);
+  await expect(d.getByText(`All its items are already in ${OTHER}.`)).toBeVisible();
+  await expect(d.getByRole("button", { name: "Add all 4 items", exact: true })).toBeDisabled();
+  await expect(chooseInstead(d)).toBeEnabled();
+});
+
+test("when other series have some of the archive items, Add all says how many are skipped and stays enabled", async ({ page }) => {
+  const calls = await mock(page, { elsewhere: [{ series: OTHER, items: 3 }] });
+  await emptyStateButton(page).click();
+  const d = dialog(page);
+  await expect(d.getByText(`3 of its items are already in ${OTHER} and are skipped.`)).toBeVisible();
+  await d.getByRole("button", { name: "Add all 4 items", exact: true }).click();
+  await expect(d.getByText(`Adding 4 items in the background. ${QUEUED}`, { exact: true })).toBeVisible();
+  expect(calls.postedAll).toEqual([{ search: "" }]);
+});
+
+test("a single item in another series reads 1 of its items is already in <series> and is skipped", async ({ page }) => {
+  await mock(page, { elsewhere: [{ series: OTHER, items: 1 }] });
+  await emptyStateButton(page).click();
+  await expect(dialog(page).getByText(`1 of its items is already in ${OTHER} and is skipped.`)).toBeVisible();
+});
+
+test("with nothing in other series the first view has no skipped note", async ({ page }) => {
+  await mock(page);
+  await emptyStateButton(page).click();
+  const d = dialog(page);
+  await expect(d.getByRole("button", { name: "Add all 4 items", exact: true })).toBeEnabled();
+  await expect(d.getByText("already in", { exact: false })).toHaveCount(0);
+});
