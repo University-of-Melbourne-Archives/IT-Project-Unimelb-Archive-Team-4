@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Download, ExternalLink, FolderOpen, Lock, Plus } from "lucide-react";
+import { Download, ExternalLink, FolderOpen, Lock, Plus, SlidersHorizontal } from "lucide-react";
 
 import AppHeader from "@/components/AppHeader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -93,7 +93,7 @@ export default function CollectionsScreen({ onChosen }: { onChosen?: (person: Re
                 <TableHead>Items</TableHead>
                 <TableHead>Reviewed</TableHead>
                 <TableHead>Needs attention</TableHead>
-                <TableHead className="w-10"><span className="sr-only">Open</span></TableHead>
+                <TableHead className="w-0"><span className="sr-only">Setup and open</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -116,7 +116,14 @@ export default function CollectionsScreen({ onChosen }: { onChosen?: (person: Re
                   <TableCell><Items collection={c} /></TableCell>
                   <TableCell><Progress collection={c} /></TableCell>
                   <TableCell><Attention collection={c} /></TableCell>
-                  <TableCell><TableOpenArrow /></TableCell>
+                  <TableCell>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={`/?series=${c.id}&view=setup`} aria-label={`Setup of ${c.name}`}><SlidersHorizontal /> Setup</a>
+                      </Button>
+                      <TableOpenArrow />
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

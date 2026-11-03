@@ -1309,16 +1309,22 @@ class SuggestRequest(BaseModel):
     first: int | None = Field(None, ge=1) #the range, for pick "range"
     last: int | None = Field(None, ge=1)
     hint: str = Field("", max_length=1000) #told to the model as is
+    pages: list[int] | None = Field(None, min_length=1, max_length=30) #these pages, numbered from 1, in place of a pick
+    provider: str | None = None #the model asked, each part not given: the transcription one (Settings)
+    model: str | None = None
+    effort: str | None = None
 
-#page types suggested for a series by the transcription model (Settings), from some of one of its items' pages shown side by
-#side (its PDF is downloaded first if it isn't here, as item_scans does); nothing is added: {pages, types: [{label, description,
-#pages}]}. 409 until a transcription model is chosen; 502 when the model can't answer
+#page types suggested for a series by a model (the one given, else the transcription one in Settings), from some of one of its
+#items' pages shown side by side (its PDF is downloaded first if it isn't here, as item_scans does); nothing is added: {pages,
+#types: [{label, description, pages}]}. 409 until a transcription model is chosen; 502 when the model can't answer
 @app.post("/collections/{collection_id}/page-types/suggest")
 def suggest_page_types(collection_id: int, payload: SuggestRequest, db: Session = Depends(get_db)):
     from backend.pipeline.identify import suggest
-    chosen = chosen_transcription(db, None, None, None)
+    chosen = chosen_transcription(db, payload.provider, payload.model, payload.effort)
+    check_transcription(chosen["provider"], chosen["model"], chosen["effort"])
     total = item_scans(collection_id, payload.item, db)["pages"]
-    pages = suggest.pick(total, payload.count, payload.pick, payload.first, payload.last)
+    pages = (sorted({n for n in payload.pages if 1 <= n <= total}) if payload.pages
+             else suggest.pick(total, payload.count, payload.pick, payload.first, payload.last))
     if not pages:  #a range past the item's end, or ending before it starts
         raise HTTPException(status_code=400, detail=f"That item has {total} page{'' if total == 1 else 's'}: choose pages within them.")
     known = [t["label"] for t in get_page_types(collection_id, db) if not t["unknown"]]
@@ -1921,6 +1927,26 @@ def put_page_sorting(payload: PageSortingRequest, db: Session = Depends(get_db))
     app_settings.save_sorting_settings(db, unsure=payload.unsure,
                                        sorter=None if payload.sameAsTranscription else payload.sorter.model_dump() if payload.sorter else False)
     return get_page_sorting(db)
+
+class SeriesSortingRequest(BaseModel):
+    sorter: Sorter | None  #null: the series' pages are sorted as Settings says again
+
+#the reading model that sorts a series' pages into its page types, if the series has its own (null: as Settings says)
+@app.get("/collections/{collection_id}/page-sorting")
+def get_series_sorting(collection_id: int, db: Session = Depends(get_db)):
+    if not db.get(models.Collection, collection_id):
+        raise HTTPException(status_code=404, detail="No such series.")
+    return {"sorter": app_settings.series_sorter(db, collection_id)}
+
+@app.put("/collections/{collection_id}/page-sorting")
+def put_series_sorting(collection_id: int, payload: SeriesSortingRequest, db: Session = Depends(get_db)):
+    if not db.get(models.Collection, collection_id):
+        raise HTTPException(status_code=404, detail="No such series.")
+    if payload.sorter:
+        check_transcription(payload.sorter.provider, payload.sorter.model, payload.sorter.effort)
+    write_lock(db)
+    app_settings.save_series_sorter(db, collection_id, payload.sorter.model_dump() if payload.sorter else None)
+    return get_series_sorting(collection_id, db)
 
 
 #--API KEYS--# for transcribing through an AI company's API (backend/pipeline/transcribe/providers.py): kept on this computer,

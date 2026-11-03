@@ -23,6 +23,13 @@ function SurveyReview() {
 // home, whose welcome asks, then the page asked for; asked again if the name kept isn't one of this database's (another's).
 export default function App() {
   const [person, setPerson] = useState(storedPerson);
+  // The screen follows the address, also when it changes without a page load (Back, Forward, navigate).
+  const [, setAddress] = useState(location.href);
+  useEffect(() => {
+    const moved = () => setAddress(location.href);
+    window.addEventListener("popstate", moved);
+    return () => window.removeEventListener("popstate", moved);
+  }, []);
   useEffect(() => {
     if (!person) return;
     getReviewers().then((people) => {

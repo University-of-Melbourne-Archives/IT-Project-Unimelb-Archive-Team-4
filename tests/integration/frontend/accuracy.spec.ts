@@ -105,16 +105,16 @@ const chosen = (dialog: Locator) => dialog.locator('button[aria-pressed="true"]'
 const terms = (dialog: Locator) => dialog.locator("dl dt");
 const field = (dialog: Locator, term: string) => dialog.locator(`dt:text-is("${term}") + dd`);
 
-test("the series' tabs are Items, Accuracy and Setup, with Accuracy the one shown, under the series' name", async ({ page }) => {
+test("the series' tabs are Items and Accuracy, with Setup beside them and Accuracy the one shown, under the series' name", async ({ page }) => {
   await mockApi(page, { models: [MODEL], accuracy: [ROW] });
   await page.goto(OPEN);
   await expect(page.locator("h1")).toHaveText("Wilfred Prest Survey");
-  await expect(tabs(page)).toHaveText(["Items", "Accuracy", "Setup"]);
-  for (const [i, href] of ["/?series=1", "/?series=1&view=accuracy", "/?series=1&view=setup"].entries())
+  await expect(tabs(page)).toHaveText(["Items", "Accuracy"]);
+  await expect(page.getByRole("link", { name: "Setup", exact: true })).toHaveAttribute("href", "/?series=1&view=setup");
+  for (const [i, href] of ["/?series=1", "/?series=1&view=accuracy"].entries())
     await expect(tabs(page).nth(i)).toHaveAttribute("href", href);
   await expect(tabs(page).nth(1)).toHaveAttribute("aria-current", "page");
   await expect(tabs(page).first()).not.toHaveAttribute("aria-current", "page");
-  await expect(tabs(page).last()).not.toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { level: 2 })).toHaveText("Accuracy");
   await expect(page.getByRole("heading", { level: 3 })).toHaveText(["By page type"]);
 });
@@ -129,7 +129,7 @@ test("the series' accuracy, models and page types are asked for with the series,
   await expect(actionOf(page, "Model").getByRole("link", { name: "Change model" })).toHaveAttribute("href", "/?view=settings&tab=transcription");
   const edit = compare(page).getByRole("link", { name: "Edit templates" });
   await expect(edit).toHaveCount(3);
-  expect(await edit.evaluateAll((links) => links.map((link) => link.getAttribute("href")))).toEqual(Array(3).fill("/?series=2&view=setup"));
+  expect(await edit.evaluateAll((links) => links.map((link) => link.getAttribute("href")))).toEqual(Array(3).fill("/?series=2&view=setup&section=page-types"));
   expect([...new Set(calls.accuracy)]).toEqual(["?collection=2"]);
   expect([...new Set(calls.models)]).toEqual(["?collection=2"]);
   expect([...new Set(calls.types)]).toEqual(["?collection=2"]);
@@ -185,7 +185,7 @@ test("one table compares what was read so far with the next run, a row for the m
     await expect(rightOf(page, row).getByRole("button")).toHaveAccessibleName(`${row} ${now}`);
     await expect(badges(rightOf(page, row))).toHaveCount(differs ? 1 : 0);
     const edit = actionOf(page, row).getByRole("link", { name: "Edit templates" });
-    await expect(edit).toHaveAttribute("href", "/?series=1&view=setup");
+    await expect(edit).toHaveAttribute("href", "/?series=1&view=setup&section=page-types");
     await expect(edit).toHaveAttribute("data-slot", "button");
     await expect(edit).toHaveAttribute("data-variant", "outline");
     await expect(edit).toHaveAttribute("data-size", "sm");
@@ -298,7 +298,7 @@ test("with no model saved, no prompt version and no templates, the table says so
   await expect(rightOf(page, "Templates")).toHaveText("None yet");
   await expect(byType(page)).toHaveCount(0); // nothing read, nothing reviewed and no page type with a template
   await expect(actionOf(page, "Model").getByRole("link", { name: "Change model" })).toHaveAttribute("href", "/?view=settings&tab=transcription");
-  await expect(actionOf(page, "Templates").getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup");
+  await expect(actionOf(page, "Templates").getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup&section=page-types");
 });
 
 // reads: how the pages the set-up on the left read were read; configured: the model saved
@@ -952,7 +952,7 @@ test("versions that can't be loaded say so above everything, show the prompt and
   await expect(rightOf(page, "Accuracy")).toHaveText("—");
   await expect(notMeasured(page)).toHaveCount(0);
   await expect(actionOf(page, "Model").getByRole("link", { name: "Change model" })).toBeVisible();
-  await expect(actionOf(page, "Main page template").getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup");
+  await expect(actionOf(page, "Main page template").getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup&section=page-types");
   await disclosure(page).click();
   await expect(byType(page).getByRole("button")).toHaveCount(0);
   await expect(cells(byType(page), 0)).toHaveText(["Not recorded", "120", "21.5 s", "—", "not reviewed"], { useInnerText: true });
@@ -975,7 +975,7 @@ test("page types that can't be loaded say so, show the next run's templates as n
   await expect(notMeasured(page)).toHaveCount(0);
   await expect(byType(page).locator("tbody tr")).toHaveCount(1); // only the page types of the set-up on the left
   await expect(cells(byType(page), 0)).toHaveText(["Main page", "—", "—", "3", "95.0%"], { useInnerText: true });
-  await expect(actionOf(page, "Main page template").getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup");
+  await expect(actionOf(page, "Main page template").getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup&section=page-types");
   await expect(actionOf(page, "Model").getByRole("link", { name: "Change model" })).toBeVisible();
 });
 
@@ -986,7 +986,7 @@ test("page types and versions that both can't be loaded say so, and Change model
   await expect(page.getByTestId("accuracy-percent")).toHaveText("95.0%");
   await expect(leftOf(page, "Prompt")).toHaveText("Not loaded");
   await expect(actionOf(page, "Model").getByRole("link", { name: "Change model" })).toHaveAttribute("href", "/?view=settings&tab=transcription");
-  await expect(compare(page).getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup");
+  await expect(compare(page).getByRole("link", { name: "Edit templates" })).toHaveAttribute("href", "/?series=1&view=setup&section=page-types");
   await expect(actionOf(page, "Accuracy").getByRole("link", { name: "Review more pages" })).toHaveAttribute("href", "/?series=1");
 });
 

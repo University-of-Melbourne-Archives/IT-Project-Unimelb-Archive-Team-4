@@ -37,8 +37,23 @@ export function keyStatus(k: ApiKey) {
   return !k.needsKey ? "No key: install Ollama, then download a model that reads images, like llama3.2-vision."
     : k.saved ? "Key saved" : k.fromEnvironment ? "Key from this computer's settings" : "No key";
 }
+// Whether each provider is connected (undefined: not known yet): a program signed in, an API key, or for Ollama, models listed.
+export function readyOf(connections: Record<string, { signedIn: boolean }> | null, keys: ApiKey[] | null,
+  options: Record<string, ProviderOptions> | null | undefined): Record<string, boolean | undefined> {
+  return {
+    ...Object.fromEntries(Object.entries(connections ?? {}).map(([id, c]) => [id, c.signedIn])),
+    ...Object.fromEntries((keys ?? []).filter((k) => k.needsKey).map((k) => [k.provider, hasKey(k)])),
+    ollama: options === undefined ? undefined : Boolean(modelsOf(options?.ollama)),
+  };
+}
 // The archive's website; a series' page is /nodes/view/<its number>, and an item's /nodes/view/<its name>.
 export const ARCHIVE = "https://archives.library.unimelb.edu.au";
+// A series' name, or as last seen while its screen's data is still on the way ("" if never seen).
+const seriesNames = new Map<number, string>();
+export function seriesName(id: number, name: string | undefined) {
+  if (name) seriesNames.set(id, name);
+  return name || seriesNames.get(id) || "";
+}
 // The series and the item a page's address names (/?series=<id>&item=<name>), or an older link's ?collection= and ?bundle=.
 export const seriesParam = (params: URLSearchParams) => params.get("series") ?? params.get("collection");
 export const itemParam = (params: URLSearchParams) => params.get("item") ?? params.get("bundle");

@@ -62,6 +62,25 @@ def save_sorting_settings(db, unsure=None, sorter=False):
                 db.add(models.AppSetting(key=key, value=sorter[field]))
     db.commit()
 
+#a series' own reading model that sorts its pages: series.<id>.page_sorting.provider / .model / .effort
+def series_sorter_keys(collection_id):
+    return {field: f"series.{collection_id}.page_sorting.{field}" for field in FIELDS}
+
+#the series' sorter, or None (its pages are sorted as Settings says)
+def series_sorter(db, collection_id):
+    keys = series_sorter_keys(collection_id)
+    rows = dict(db.query(models.AppSetting.key, models.AppSetting.value).filter(models.AppSetting.key.in_(keys.values())))
+    return {field: rows[key] for field, key in keys.items()} if all(key in rows for key in keys.values()) else None
+
+def save_series_sorter(db, collection_id, sorter):
+    """sorter: {provider, model, effort}, or None (sorted as Settings says again)."""
+    keys = series_sorter_keys(collection_id)
+    db.query(models.AppSetting).filter(models.AppSetting.key.in_(keys.values())).delete()
+    for field, key in keys.items():
+        if sorter:
+            db.add(models.AppSetting(key=key, value=sorter[field]))
+    db.commit()
+
 def save_transcription_defaults(db, provider, model, effort):
     for key, value in zip(KEYS.values(), (provider, model, effort)):
         db.merge(models.AppSetting(key=key, value=value))

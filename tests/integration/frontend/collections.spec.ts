@@ -68,7 +68,8 @@ test("home lists each series with its archive identifier, items, review progress
   await mockApi(page);
   await page.goto("/");
   const row = page.getByRole("row").filter({ hasText: "Wilfred Prest Survey" });
-  await expect(row.getByRole("link", { name: "Wilfred Prest Survey" })).toHaveAttribute("href", "/?series=1");
+  await expect(row.getByRole("link", { name: "Wilfred Prest Survey", exact: true })).toHaveAttribute("href", "/?series=1");
+  await expect(row.getByRole("link", { name: "Setup of Wilfred Prest Survey" })).toHaveAttribute("href", "/?series=1&view=setup");
   await expect(row.getByRole("link", { name: "UMA-SR-000000842" })).toHaveAttribute("href", "https://archives.library.unimelb.edu.au/nodes/view/499420");
   await expect(row).toContainText("University of Melbourne Social Survey forms");
   await expect(row).toContainText("26 of 45 processed");
@@ -113,7 +114,8 @@ test("a new series previews what it links to on the archive, takes its name from
   await dialog(page).getByLabel("Name").fill("Social survey forms");
   await dialog(page).getByRole("button", { name: "Create series" }).click();
   await expect(page).toHaveURL("/?series=2");
-  await expect(page.getByRole("heading", { name: "Set up this series to start reading it" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This series isn't set up yet" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Run the setup wizard" })).toHaveAttribute("href", "/?series=2&view=setup");
   expect(calls.created).toEqual([{ name: "Social survey forms", archiveSeries: "https://archives.library.unimelb.edu.au/nodes/view/499420",
     archiveIdentifier: "UMA-SR-000000842", archiveTitle: "University of Melbourne Social Survey forms", archiveItems: 45 }]);
   expect(calls.filled).toEqual([{ search: "" }]);

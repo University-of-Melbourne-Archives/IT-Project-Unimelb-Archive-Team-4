@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { serveItems } from "./items-mock";
 
 // The top bar on every screen: the app's name (home), the series switcher and the trail below it, and Settings and Tasks; and a
-// series' own header with its actions and its Items | Accuracy | Setup tabs. Every API call is intercepted: no requests reach the real backend.
+// series' own header with its actions, its Setup button and its Items | Accuracy tabs. Every API call is intercepted: no requests reach the real backend.
 // The bundle's id (pdf-216417) differs from its name (216417), as for a PDF inside a numbered folder.
 const pages = ["main", "notes"].map((type, index) => ({
   id: `216417/p${index}`,
@@ -57,6 +57,7 @@ const itemsCrumb = (page: Page) => trail(page).getByRole("link", { name: "Items"
 const bundleLink = (page: Page) => page.getByRole("link", { name: "216417", exact: true });
 const appName = (page: Page) => page.getByRole("link", { name: "PrestCribe", exact: true });
 const tabs = (page: Page) => page.getByRole("navigation", { name: "Series" }).getByRole("link");
+const setupLink = (page: Page) => page.getByRole("main").getByRole("link", { name: "Setup", exact: true });
 
 test("home is the app's name alone, which links home, with Settings and Tasks", async ({ page }) => {
   await mockApi(page);
@@ -68,7 +69,7 @@ test("home is the app's name alone, which links home, with Settings and Tasks", 
   await expect(page.locator("h1")).toHaveText("Series");
 });
 
-test("a series' items name it in the series menu and its heading, with its Items, Accuracy and Setup tabs", async ({ page }) => {
+test("a series' items name it in the series menu and its heading, with its Items and Accuracy tabs and a Setup button", async ({ page }) => {
   await mockApi(page);
   await page.goto("/?series=1");
   await expect(switcher(page)).toHaveAccessibleName("Series: Wilfred Prest Survey");
@@ -78,10 +79,10 @@ test("a series' items name it in the series menu and its heading, with its Items
   await expect(crumbs(page)).toHaveCount(0);
   await expect(page.locator("h1")).toHaveText("Wilfred Prest Survey");
   await expect(page.getByRole("link", { name: "UMA-SR-000000842" })).toHaveAttribute("href", "https://archives.library.unimelb.edu.au/nodes/view/499420");
-  await expect(tabs(page)).toHaveText(["Items", "Accuracy", "Setup"]);
+  await expect(tabs(page)).toHaveText(["Items", "Accuracy"]);
   await expect(tabs(page).first()).toHaveAttribute("aria-current", "page");
   await expect(tabs(page).nth(1)).toHaveAttribute("href", "/?series=1&view=accuracy");
-  await expect(tabs(page).last()).toHaveAttribute("href", "/?series=1&view=setup");
+  await expect(setupLink(page)).toHaveAttribute("href", "/?series=1&view=setup");
   await expect(page.getByRole("heading", { name: "All items", level: 2 })).toBeVisible();
 });
 
@@ -262,7 +263,7 @@ test("a series' actions sit by its title, Add items first; Settings and Tasks ar
   await main.getByRole("button", { name: "Export", exact: true }).click();
   await expect(page.getByRole("dialog").getByRole("heading", { name: "Export" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await tabs(page).last().click();
+  await setupLink(page).click();
   await expect(page).toHaveURL("/?series=1&view=setup");
   await page.getByRole("banner").getByRole("link", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();

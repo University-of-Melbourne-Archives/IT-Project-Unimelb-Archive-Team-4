@@ -314,6 +314,57 @@ def test_a_request_with_no_item_is_422_and_the_most_it_allows_is_30_pages_and_a_
     assert client.post("/collections/1/page-types/suggest", json={"item": "5", "count": 30, "hint": "x" * 1000}).status_code == 200
 
 
+def test_pages_given_are_used_as_they_are_sorted_with_those_outside_the_item_dropped_and_repeats_counted_once(client, item, chosen, monkeypatch):
+    asked = answering(monkeypatch, ANSWER)
+    reply = client.post("/collections/1/page-types/suggest", json={"item": "5", "pages": [7, 2, 7, 0, 9, 2, 4, -1], "count": 1, "pick": "random"})
+    assert reply.status_code == 200 and reply.json()["pages"] == [2, 4, 7]  # 8 pages there; count and pick are not used
+    assert asked[0]["prompt"].startswith("These are 3 pages")
+
+
+def test_pages_all_outside_the_item_are_400_and_the_model_isnt_asked(client, item, chosen, monkeypatch):
+    asked = answering(monkeypatch, ANSWER)
+    reply = client.post("/collections/1/page-types/suggest", json={"item": "5", "pages": [9, 20]})
+    assert (reply.status_code, reply.json()["detail"]) == (400, "That item has 8 pages: choose pages within them.")
+    assert asked == []
+
+
+@pytest.mark.parametrize("pages", [[], list(range(1, 32))])
+def test_an_empty_list_of_pages_or_more_than_30_is_422_and_the_model_isnt_asked(client, item, chosen, monkeypatch, pages):
+    asked = answering(monkeypatch, ANSWER)
+    assert client.post("/collections/1/page-types/suggest", json={"item": "5", "pages": pages}).status_code == 422
+    assert asked == []
+
+
+def test_30_pages_given_are_accepted(client, item, chosen, monkeypatch):
+    answering(monkeypatch, ANSWER)
+    reply = client.post("/collections/1/page-types/suggest", json={"item": "5", "pages": [1] * 30})
+    assert reply.status_code == 200 and reply.json()["pages"] == [1]
+
+
+def test_a_model_given_is_asked_instead_of_the_chosen_one_and_what_isnt_given_is_taken_from_it(client, item, chosen, monkeypatch):
+    asked = answering(monkeypatch, ANSWER)
+    reply = client.post("/collections/1/page-types/suggest", json={"item": "5", "provider": "claude", "model": " other-model "})
+    assert reply.status_code == 200
+    assert asked[0]["choice"] == {"provider": "claude", "model": "other-model", "effort": "medium", "fresh": True}
+    client.post("/collections/1/page-types/suggest", json={"item": "5", "provider": "claude", "model": "other-model", "effort": "high"})
+    assert asked[1]["choice"] == {"provider": "claude", "model": "other-model", "effort": "high", "fresh": True}
+
+
+def test_a_model_given_works_with_none_chosen_in_settings(client, item, monkeypatch):
+    asked = answering(monkeypatch, ANSWER)
+    assert client.post("/collections/1/page-types/suggest", json={"item": "5", **APP}).status_code == 200
+    assert asked[0]["choice"] == {**APP, "fresh": True}
+
+
+@pytest.mark.parametrize("fields", [{"model": ""}, {"model": "two words"}, {"model": "-option"}, {"model": "m" * 201}, {"model": "a+b"},
+                                    {"provider": "unknown"}, {"effort": " "}, {"effort": "very high"}])
+def test_a_model_that_isnt_offered_is_refused_and_nothing_is_asked(client, item, chosen, monkeypatch, fields):
+    asked = answering(monkeypatch, ANSWER)
+    reply = client.post("/collections/1/page-types/suggest", json={"item": "5", **fields})
+    assert reply.status_code == 400
+    assert asked == []
+
+
 def test_a_model_that_cant_answer_is_a_502_with_what_it_said(client, item, chosen, monkeypatch):
     def refuses(image, prompt, template, **choice):
         raise SystemExit("rate limited")

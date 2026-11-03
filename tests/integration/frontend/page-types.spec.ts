@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// A series' Setup tab (/?view=setup; /?view=page-types, its old name, still opens it) on an intercepted API: nothing reaches the real backend.
+// A series' Setup screen (/?view=setup, its sections by ?section=; /?view=page-types, its old name, opens the page types) on an intercepted API: nothing reaches the real backend.
 type PageType = { name: string; label: string; builtIn: boolean; unknown: boolean; templateVersion: number | null };
 type Part = { type: string; count: string; how: string };
 type Level = { name: string; parts: Part[]; key: string | null };
@@ -15,8 +15,21 @@ const type = (name: string, label: string, over: Partial<PageType> = {}): PageTy
   name, label, builtIn: true, unknown: false, templateVersion: null, ...over,
 });
 
+// The models a series' page sorting can choose from: Claude Code and Codex CLI (programs), Gemini and OpenAI (API keys).
+type Sorter = { provider: string; model: string; effort: string };
+type SortMock = { sorter?: Sorter | null; signedIn?: string[]; keys?: string[]; putError?: string };
+const models = (efforts: string[] | null, ...values: [string, string][]) =>
+  ({ available: true, error: null, efforts: efforts ?? ["default"],
+    models: values.map(([value, label]) => ({ value, label, group: "latest", efforts, defaultEffort: efforts ? "medium" : null })) });
+const SORT_OPTIONS = {
+  claude: models(["low", "medium", "high"], ["haiku", "Haiku"], ["opus", "Opus"]), codex: models(["low", "high"], ["gpt-x", "GPT X"]),
+  gemini: models(null, ["gemini-flash", "Gemini Flash"]), openai: models(null, ["gpt-api", "GPT API"]),
+};
+const API_KEYS = [["gemini", "Gemini API"], ["openai", "OpenAI API"]];
+
 async function mockApi(page: Page, recordKey: string | null = "number_of_dwelling",
-  checkVersions: CheckVersion[] = [], parts: Part[] = [MAIN_PART, NOTES_PART, CODED_PART]) {
+  checkVersions: CheckVersion[] = [], parts: Part[] = [MAIN_PART, NOTES_PART, CODED_PART], sort: SortMock = {}) {
+  let sorter = sort.sorter ?? null;
   const types = [
     type("coded", "Coded page", { templateVersion: 8 }),
     type("main", "Main page", { templateVersion: 7 }),
@@ -40,6 +53,7 @@ async function mockApi(page: Page, recordKey: string | null = "number_of_dwellin
   const calls = {
     patchType: [] as unknown[], putLevels: [] as unknown[], tried: [] as unknown[], addType: [] as unknown[], saveTemplate: [] as unknown[],
     saveChecks: [] as { checks: object[]; basedOn: number | null; reviewerId: number; note: string | null }[], checkAgain: 0,
+    sortingPuts: [] as unknown[], putError: sort.putError ?? "",
   };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -103,6 +117,21 @@ async function mockApi(page: Page, recordKey: string | null = "number_of_dwellin
       types.find((t) => t.name === named[2])!.templateVersion = 20;
       return route.fulfill({ status: 201, json: { id: 20 } });
     }
+    if (path === "/api/collections/1/page-sorting") {
+      if (method === "PUT") {
+        const body = request.postDataJSON();
+        calls.sortingPuts.push(body);
+        if (calls.putError) return route.fulfill({ status: 400, json: { detail: calls.putError } });
+        sorter = body.sorter;
+      }
+      return route.fulfill({ json: { sorter } });
+    }
+    if (path === "/api/connections")
+      return route.fulfill({ json: Object.fromEntries(["claude", "codex"].map((id) => [id, { signedIn: (sort.signedIn ?? ["claude"]).includes(id) }])) });
+    if (path === "/api/api-keys")
+      return route.fulfill({ json: API_KEYS.map(([provider, label]) => ({ provider, label, keysUrl: "https://example.com", needsKey: true,
+        saved: (sort.keys ?? ["gemini"]).includes(provider), fromEnvironment: false })) });
+    if (path === "/api/transcription-options") return route.fulfill({ json: SORT_OPTIONS });
     return route.fulfill({ status: 404, json: { detail: "Not mocked." } });
   });
   return calls;
@@ -185,17 +214,19 @@ const addPart = async (page: Page, label: string) => {
 
 test("a series' levels are a ladder from Item to Page, and its page types are listed by label with their template", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/?series=1&view=setup");
-  await expect(page.getByRole("heading", { name: "Wilfred Prest Survey", level: 1 })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Series" }).getByRole("link", { name: "Setup" })).toHaveAttribute("aria-current", "page");
+  await page.goto("/?series=1&view=setup&section=levels");
+  await expect(page.getByRole("heading", { name: "Setup", level: 1 })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Series: Wilfred Prest Survey" })).toBeVisible();
   await expect(ladder(page)).toHaveText([/^Item\s*From the archive$/, /^Survey\s*Starts at each Main page · Coded page matched by number\s*Edit$/,
     /^Page\s*From the scan$/]);
-  await expect(page.getByRole("tablist", { name: "Setup" }).getByRole("tab")).toHaveText(["Levels", "Page types", "Checks"]);
-  await expect(page.getByRole("tab", { name: "Levels" })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("tab", { name: "Page types" }).click();
+  const menu = page.getByRole("navigation", { name: "Setup" });
+  await expect(menu.getByRole("link")).toHaveText(["Overview", "Structure", "Kinds of page", "Checks", "Sorting"]);
+  await expect(menu.getByRole("link", { name: "Structure" })).toHaveAttribute("aria-current", "page");
+  await menu.getByRole("link", { name: "Kinds of page" }).click();
   await expect(page).toHaveURL("/?series=1&view=setup&section=page-types");
-  await page.reload(); // the tab shown is kept
-  await expect(page.getByRole("heading", { name: "Page types", level: 2 })).toBeVisible();
+  await expect(menu.getByRole("link", { name: "Kinds of page" })).toHaveAttribute("aria-current", "page");
+  await page.reload(); // the section shown is kept
+  await expect(page.getByRole("heading", { name: "Kinds of page", level: 2 })).toBeVisible();
   await expect(row(page, "Main page")).toContainText("Saved");
   await expect(row(page, "Unknown")).toContainText("Not read: pages sorting couldn't place wait here");
   await expect(page.getByRole("columnheader", { name: "Grouping" })).toHaveCount(0);
@@ -247,7 +278,7 @@ test("a new page type is added by label, then opened to give it a template", asy
 
 test("a level opens on its shape, and its name, what one is made of in order (custom) and its number field are saved together, and a refusal is shown", async ({ page }) => {
   const calls = await mockApi(page);
-  await page.goto("/?series=1&view=setup");
+  await page.goto("/?series=1&view=setup&section=levels");
   await page.getByRole("link", { name: "Edit survey" }).click();
   await expect(page).toHaveURL("/?series=1&view=setup&level=1");
   await expect(page.getByRole("heading", { name: "Survey structure", level: 1 })).toBeVisible();
@@ -290,7 +321,7 @@ test("a level opens on its shape, and its name, what one is made of in order (cu
 
 test("a level added goes inside the bottom one, its first page type starting one, and the ladder steps down to it", async ({ page }) => {
   const calls = await mockApi(page);
-  await page.goto("/?series=1&view=setup");
+  await page.goto("/?series=1&view=setup&section=levels");
   await page.getByRole("link", { name: "Add level" }).click();
   await expect(page).toHaveURL("/?series=1&view=setup&level=new");
   await expect(page.getByText("It goes inside each survey. Items read from now on group by it.")).toBeVisible();
@@ -542,4 +573,97 @@ test("a level's settings are tried on an item already read before they're saved,
   await expect(main.getByText("A level's name is a word or two, like survey or letter.")).toBeVisible();
   await main.getByLabel("Name").fill("survey");
   await expect(main.getByText("A level's name is a word or two, like survey or letter.")).toHaveCount(0); // tried with another name
+});
+
+// The Sorting section: which model sorts this series' pages into its types.
+const sorting = (page: Page) => page.getByRole("region", { name: "Sorting", exact: true });
+const sortWith = (page: Page) => sorting(page).getByRole("combobox", { name: "Model that sorts this series' pages" });
+const sameRadio = (page: Page) => sorting(page).getByRole("radio", { name: "Same as transcription" });
+const otherRadio = (page: Page) => sorting(page).getByRole("radio", { name: "Another model" });
+const SORT_PAGE = "/?series=1&view=setup&section=sorting";
+
+test("a series sorts its pages with the transcription model unless told otherwise", async ({ page }) => {
+  await mockApi(page);
+  await page.goto(SORT_PAGE);
+  await expect(sameRadio(page)).toHaveAttribute("aria-checked", "true");
+  await expect(otherRadio(page)).toHaveAttribute("aria-checked", "false");
+  await expect(sortWith(page)).toHaveCount(0);
+});
+
+test("another model is chosen from the connected providers' models only", async ({ page }) => {
+  const calls = await mockApi(page, undefined, undefined, undefined, { signedIn: ["claude"], keys: ["gemini"] }); // Codex signed out, no OpenAI key
+  await page.goto(SORT_PAGE);
+  await otherRadio(page).click();
+  await expect(otherRadio(page)).toHaveAttribute("aria-checked", "true");
+  await expect(sortWith(page).locator("option")).toHaveText(["Choose a model…", "Haiku", "Opus", "Gemini Flash"]);
+  await expect(sortWith(page).locator("optgroup")).toHaveCount(2);
+  await expect(sortWith(page).locator("optgroup[label='Claude Code']")).toHaveCount(1);
+  await expect(sortWith(page).locator("optgroup[label='Gemini API']")).toHaveCount(1);
+  expect(calls.sortingPuts).toEqual([]); // choosing Another model saves nothing until a model is chosen
+});
+
+test("a chosen model is saved at once with the lowest effort on offer", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto(SORT_PAGE);
+  await otherRadio(page).click();
+  await sortWith(page).selectOption({ label: "Haiku" });
+  await expect.poll(() => calls.sortingPuts).toEqual([{ sorter: { provider: "claude", model: "haiku", effort: "low" } }]);
+  await expect(sortWith(page).locator("option:checked")).toHaveText("Haiku");
+  await sortWith(page).selectOption({ label: "Gemini Flash" }); // an API model has the one effort, "default"
+  await expect.poll(() => calls.sortingPuts.at(-1)).toEqual({ sorter: { provider: "gemini", model: "gemini-flash", effort: "default" } });
+  await expect(sortWith(page).locator("option:checked")).toHaveText("Gemini Flash");
+  await page.reload(); // kept
+  await expect(otherRadio(page)).toHaveAttribute("aria-checked", "true");
+  await expect(sortWith(page).locator("option:checked")).toHaveText("Gemini Flash");
+});
+
+test("going back to the transcription model clears the saved one", async ({ page }) => {
+  const calls = await mockApi(page, undefined, undefined, undefined, { sorter: { provider: "claude", model: "haiku", effort: "low" } });
+  await page.goto(SORT_PAGE);
+  await expect(otherRadio(page)).toHaveAttribute("aria-checked", "true");
+  await expect(sortWith(page).locator("option:checked")).toHaveText("Haiku");
+  await sameRadio(page).click();
+  await expect(sameRadio(page)).toHaveAttribute("aria-checked", "true");
+  await expect(sortWith(page)).toHaveCount(0);
+  expect(calls.sortingPuts).toEqual([{ sorter: null }]);
+  await page.reload();
+  await expect(sameRadio(page)).toHaveAttribute("aria-checked", "true");
+});
+
+test("a saved model whose provider isn't connected is warned about, and stays the choice shown", async ({ page }) => {
+  const calls = await mockApi(page, undefined, undefined, undefined, { sorter: { provider: "codex", model: "gpt-x", effort: "low" }, signedIn: ["claude"] });
+  await page.goto(SORT_PAGE);
+  await expect(sorting(page).getByText("Codex CLI isn't connected on this computer. Choose another model.")).toBeVisible();
+  await expect(otherRadio(page)).toHaveAttribute("aria-checked", "true");
+  await expect(sortWith(page).locator("option:checked")).toHaveText("gpt-x (Codex CLI)");
+  await expect(sortWith(page).locator("option")).toHaveText(["gpt-x (Codex CLI)", "Haiku", "Opus", "Gemini Flash"]);
+  expect(calls.sortingPuts).toEqual([]);
+});
+
+test("with no provider connected, Another model says to connect one in Settings", async ({ page }) => {
+  await mockApi(page, undefined, undefined, undefined, { signedIn: [], keys: [] });
+  await page.goto(SORT_PAGE);
+  await otherRadio(page).click();
+  await expect(sorting(page).getByText("Connect a provider in Settings first. Its models then appear here.")).toBeVisible();
+  await expect(sortWith(page).locator("option")).toHaveText(["Choose a model…"]);
+});
+
+test("a refused save shows its message and puts the previous choice back", async ({ page }) => {
+  const calls = await mockApi(page, undefined, undefined, undefined, { sorter: { provider: "claude", model: "haiku", effort: "low" }, putError: "Enter a valid model name." });
+  await page.goto(SORT_PAGE);
+  await sortWith(page).selectOption({ label: "Gemini Flash" });
+  await expect(sorting(page).getByRole("alert")).toHaveText("Enter a valid model name.");
+  await expect(sortWith(page).locator("option:checked")).toHaveText("Haiku");
+  expect(calls.sortingPuts).toEqual([{ sorter: { provider: "gemini", model: "gemini-flash", effort: "default" } }]);
+  calls.putError = "";
+  await sortWith(page).selectOption({ label: "Opus" }); // a new try clears the message
+  await expect(sorting(page).getByRole("alert")).toHaveCount(0);
+  await expect(sortWith(page).locator("option:checked")).toHaveText("Opus");
+});
+
+test("a series' sorting that can't be loaded shows an error", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/collections/1/page-sorting", (route) => route.fulfill({ status: 404, json: { detail: "No such series." } }));
+  await page.goto(SORT_PAGE);
+  await expect(page.getByRole("alert").filter({ hasText: "No such series." })).toBeVisible();
 });
