@@ -34,8 +34,16 @@ def test_the_archive_preview_reads_the_series_page(client, archive):
     archive.add_series(499420, PREST, DESCRIPTION, 45)
     assert client.get("/archive-series/499420").json() == {  # the title without the "[identifier] " it starts with
         "id": 499420, "title": "University of Melbourne Social Survey forms", "identifier": "UMA-SR-000000842", "date": "1941-1943", "access": "Open for public access",
-        "items": 45, "url": "https://archives.library.unimelb.edu.au/nodes/view/499420"}
+        "items": 45, "url": "https://archives.library.unimelb.edu.au/nodes/view/499420", "inPrestCribe": []}
     assert client.get("/archive-series/1").status_code == 404
+
+
+def test_the_archive_preview_says_which_series_here_list_its_items_already(client, db, archive):
+    archive.add_series(499420, PREST, DESCRIPTION, 45)
+    db.add_all([models.ArchiveItem(node=node, collection_id=1, identifier=f"UMA-ITE-{node}", title=f"Item {node}", pdf=f"{node}/{node}.pdf")
+                for node in (11, 12)])
+    db.commit()
+    assert client.get("/archive-series/499420").json()["inPrestCribe"] == [{"series": "Wilfred Prest Survey", "items": 2}]
 
 
 def test_the_archive_preview_reads_a_twice_escaped_title_and_a_count_in_thousands(client, archive):

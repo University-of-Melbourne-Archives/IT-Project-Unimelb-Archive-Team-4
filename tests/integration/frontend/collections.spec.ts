@@ -18,7 +18,9 @@ const ITEM = { ...SERIES, id: 216412, title: "Box Hill 00", identifier: "UMA-ITE
   url: "https://archives.library.unimelb.edu.au/nodes/view/216412" };
 
 type Fill = { status?: number; detail?: string; gate?: Promise<void> }; // how POST items/all answers; it queues the job unless it has a status
-async function mockApi(page: Page, { archiveDown = false, slowNode = 0, fill = {} as Fill, stateError = "", stateGate = undefined as Promise<void> | undefined } = {}) {
+// listed: the series here that have the archive series' items already, as its lookup says
+async function mockApi(page: Page, { archiveDown = false, slowNode = 0, fill = {} as Fill, stateError = "", stateGate = undefined as Promise<void> | undefined,
+  listed = undefined as { series: string; items: number }[] | undefined } = {}) {
   const calls = { created: [] as unknown[], filled: [] as unknown[], saved: [] as string[] };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -33,7 +35,8 @@ async function mockApi(page: Page, { archiveDown = false, slowNode = 0, fill = {
       if (archiveDown) return route.fulfill({ status: 502, json: { detail: "Couldn't reach the archive (timed out)." } });
       if (Number(series[1]) === slowNode) await new Promise((resolve) => setTimeout(resolve, 1500));
       const found = [SERIES, ITEM, LETTERS].find((s) => s.id === Number(series[1]));
-      return found ? route.fulfill({ json: found }) : route.fulfill({ status: 404, json: { detail: "The archive has no page with that number." } });
+      return found ? route.fulfill({ json: found === SERIES && listed ? { ...found, inPrestCribe: listed } : found })
+        : route.fulfill({ status: 404, json: { detail: "The archive has no page with that number." } });
     }
     if (path === "/api/collections/2/items/all" && request.method() === "POST") {
       calls.filled.push(request.postDataJSON());
@@ -187,6 +190,28 @@ test("creating a series queues all its items before opening it", async ({ page }
   await expect(dialog(page).getByText("this can take a minute", { exact: false })).toHaveCount(0);
   release();
   await expect(page).toHaveURL("/?series=2");
+});
+
+test("a series whose items another series has already says so, and is created without adding any", async ({ page }) => {
+  const calls = await mockApi(page, { listed: [{ series: "Wilfred Prest Survey", items: 45 }] });
+  await startNewSeries(page);
+  await expect(dialog(page).getByRole("region", { name: "Archive series" })).toContainText(
+    "All its items are already in Wilfred Prest Survey.");
+  await expect(addItems(page)).not.toBeChecked();
+  await expect(addItems(page)).toBeDisabled();
+  await dialog(page).getByRole("button", { name: "Create series" }).click();
+  await expect(page).toHaveURL("/?series=2");
+  expect(calls.created).toHaveLength(1);
+  expect(calls.filled).toHaveLength(0);
+});
+
+test("a series some of whose items another series has says a new one gets only the rest, and still adds them", async ({ page }) => {
+  await mockApi(page, { listed: [{ series: "Wilfred Prest Survey", items: 30 }] });
+  await startNewSeries(page);
+  await expect(dialog(page).getByRole("region", { name: "Archive series" })).toContainText(
+    "30 of its items are already in Wilfred Prest Survey.");
+  await expect(addItems(page)).toBeChecked();
+  await expect(addItems(page)).toBeEnabled();
 });
 
 test("unticking Add all its items creates the series alone", async ({ page }) => {
